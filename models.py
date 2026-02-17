@@ -17,11 +17,13 @@ class EmployeeCreate(EmployeeBase):
 
 class EmployeeProfile(EmployeeBase):
     created_at: datetime
+    profile_image: Optional[str] = None
 
 
 class EmployeeDB(EmployeeBase):
     id: str = Field(alias="_id")
     face_embedding: List[float]
+    profile_image: Optional[str] = None
     device_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -86,6 +86,7 @@ async def register(req: RegisterRequest):
             "department": req.department,
             "hashed_password": hashed_password,
             "face_embedding": embedding,
+            "profile_image": req.face_image,
             "device_id": req.device_id,
             "created_at": datetime.now(timezone.utc),
         }
@@ -105,7 +106,8 @@ async def register(req: RegisterRequest):
                 "employee_id": employee_dict["employee_id"],
                 "designation": employee_dict["designation"],
                 "department": employee_dict["department"],
-                "created_at": employee_dict["created_at"]
+                "created_at": employee_dict["created_at"],
+                "profile_image": employee_dict["profile_image"]
             }
         }
     except HTTPException:
@@ -273,7 +275,8 @@ async def login(req: LoginRequest):
             "employee_id": user.get("employee_id", "EMP-000"),
             "designation": user.get("designation", "Employee"),
             "department": user.get("department", "General"),
-            "created_at": user.get("created_at", datetime.now(timezone.utc))
+            "created_at": user.get("created_at", datetime.now(timezone.utc)),
+            "profile_image": user.get("profile_image")
         }
     }
 
@@ -399,10 +402,12 @@ async def smart_attendance(req: VerifyPresenceRequest):
         REQUIRED_WIFI_PCT = 80
         
         if wifi_pct < REQUIRED_WIFI_PCT:
-            raise HTTPException(
-                status_code=403, 
-                detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Required: {REQUIRED_WIFI_PCT}%. Get closer to the router."
-            )
+            error_detail = f"WiFi signal too weak ({wifi_pct:.0f}%). Required: {REQUIRED_WIFI_PCT}%. Get closer to the router."
+            print(f"[SmartAttendance] WiFi SIGNAL WEAK: {error_detail}")
+            if os.getenv("STRICT_MODE", "true").lower() == "true":
+                raise HTTPException(status_code=403, detail=error_detail)
+            else:
+                print("[SmartAttendance] STRICT_MODE is disabled. Allowing weak signal bypass.")
 
         # 2. Face Embedding
         new_embedding = get_face_embedding(req.image)
@@ -449,24 +454,35 @@ async def smart_attendance(req: VerifyPresenceRequest):
         dist_meters = 6371000 * c
         
         if dist_meters > radius:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Location verification failed. You are {dist_meters:.0f}m away. Must be within {radius:.0f}m."
-            )
+            error_detail = f"Location verification failed. You are {dist_meters:.0f}m away. Must be within {radius:.0f}m."
+            print(f"[SmartAttendance] GEOFENCE VIOLATION: {error_detail}")
+            
+            # Only block if STRICT_MODE is enabled
+            if os.getenv("STRICT_MODE", "true").lower() == "true":
+                raise HTTPException(status_code=403, detail=error_detail)
+            else:
+                print("[SmartAttendance] STRICT_MODE is disabled. Allowing bypass.")
 
         # 4.5 Mock Location Detection (Security)
         # Assuming frontend passes 'is_mocked' flag in metadata if available
         # Note: This requires the frontend to use a library that supports mock detection
 
-        # 5. WiFi SSID/BSSID Validation
-        target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-        target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
+        # 5. WiFi SSID/BSSID Validation (Flexible enforcement)
+        target_ssid = os.getenv("OFFICE_WIFI_SSID", "").strip()
+        target_bssid = os.getenv("OFFICE_WIFI_BSSID", "").strip()
         
-        if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
-             raise HTTPException(status_code=403, detail=f"Must be connected to Office WiFi: {target_ssid}")
+        # Only block if target_ssid is explicitly set and doesn't match
+        if target_ssid and req.wifi_ssid:
+            if req.wifi_ssid.strip().lower() != target_ssid.lower():
+                print(f"[SmartAttendance] SSID Mismatch: User is on '{req.wifi_ssid}', expected '{target_ssid}'.")
+                if os.getenv("STRICT_MODE", "true").lower() == "true":
+                    raise HTTPException(status_code=403, detail=f"Must be connected to Office WiFi: {target_ssid}")
              
-        if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
-            raise HTTPException(status_code=403, detail="Connected to wrong WiFi access point (BSSID mismatch).")
+        if target_bssid and req.wifi_bssid:
+            if req.wifi_bssid.lower() != target_bssid.lower():
+                print(f"[SmartAttendance] BSSID Mismatch: Got '{req.wifi_bssid}', expected '{target_bssid}'.")
+                if os.getenv("STRICT_MODE", "true").lower() == "true":
+                    raise HTTPException(status_code=403, detail="Connected to wrong WiFi access point.")
 
         # 5. Determine Check-in/Check-out and Enforce Sequence
         last_log = await attendance_logs_collection.find_one(
