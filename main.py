@@ -233,7 +233,10 @@ async def update_face(req: UpdateFaceRequest):
         # Update user record
         await employees_collection.update_one(
             {"email": req.email},
-            {"$set": {"face_embedding": embedding}}
+            {"$set": {
+                "face_embedding": embedding,
+                "profile_image": req.face_image
+            }}
         )
         
         return {"message": "Face data updated successfully. No attendance impact."}
@@ -303,7 +306,8 @@ async def get_me(token: str):
         "employee_id": user.get("employee_id", "0000"),
         "designation": user.get("designation", "Employee"),
         "department": user.get("department", "General"),
-        "created_at": user.get("created_at", datetime.now(timezone.utc))
+        "created_at": user.get("created_at", datetime.now(timezone.utc)),
+        "profile_image": user.get("profile_image")
     }
 
 
