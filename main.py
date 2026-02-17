@@ -172,7 +172,8 @@ async def get_analytics(email: str):
         "today_hours": round(today_hours, 2),
         "week_total": round(total_week_hours, 2),
         "daily_breakdown": daily_hours,
-        "current_status": current_status
+        "current_status": current_status,
+        "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", "").strip()
     }
 
 
