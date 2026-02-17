@@ -159,10 +159,18 @@ async def get_analytics(email: str):
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     today_hours = daily_hours.get(today_str, 0)
     
+    # Determine current status (last log type)
+    last_log = await attendance_logs_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("timestamp", -1)]
+    )
+    current_status = last_log.get("type", "check-out") if last_log else "check-out"
+
     return {
         "today_hours": round(today_hours, 2),
         "week_total": round(total_week_hours, 2),
-        "daily_breakdown": daily_hours
+        "daily_breakdown": daily_hours,
+        "current_status": current_status
     }
 
 
@@ -460,17 +468,27 @@ async def smart_attendance(req: VerifyPresenceRequest):
         if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
             raise HTTPException(status_code=403, detail="Connected to wrong WiFi access point (BSSID mismatch).")
 
-        # 5. Determine Check-in/Check-out
+        # 5. Determine Check-in/Check-out and Enforce Sequence
         last_log = await attendance_logs_collection.find_one(
             {"user_id": str(matched_user["_id"])},
             sort=[("timestamp", -1)]
         )
         
+        last_type = last_log.get("type", "check-out") if last_log else "check-out"
+        
         # Priority: Use user's intended type from frontend button
         if req.intended_type:
             attendance_type = req.intended_type
         else:
-            attendance_type = "check-out" if (last_log and last_log.get("type") == "check-in") else "check-in"
+            attendance_type = "check-out" if last_type == "check-in" else "check-in"
+
+        # Validation: Enforce clean sequence
+        if attendance_type == last_type:
+            status_text = "checked in" if last_type == "check-in" else "checked out"
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Attendance sequence error. You are already {status_text}. Please perform a {'check-out' if last_type == 'check-in' else 'check-in'} first."
+            )
 
         session_info = {}
         if attendance_type == "check-out":
