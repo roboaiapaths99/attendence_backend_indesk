@@ -52,3 +52,20 @@ Thumbs.db
 *.png
 *.gif
 *.bmp
+
+# Uploads
+uploads/
+
+# Debug / One-off scripts
+fix_*.py
+check_*.py
+dump_*.py
+debug_*.py
+*_dump.json
+
+# Service account credentials
+service-account.json
+*.json.key
+
+# Login data exports
+login_data.json
