@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+backend_errors.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Images
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+
+# Uploads
+uploads/
+
+# Debug / One-off scripts
+fix_*.py
+check_*.py
+dump_*.py
+debug_*.py
+*_dump.json
+
+# Service account credentials
+service-account.json
+*.json.key
+
+# Login data exports
+login_data.json
