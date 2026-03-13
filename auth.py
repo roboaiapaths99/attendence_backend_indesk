@@ -14,7 +14,9 @@ ph = PasswordHasher()
 # JWT configuration
 SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 43200))
+# Handle trailing comments in Docker --env-file
+expire_minutes_str = str(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "43200")).split('#')[0].strip()
+ACCESS_TOKEN_EXPIRE_MINUTES = int(expire_minutes_str)
 
 def verify_password(plain_password, hashed_password):
     try:
