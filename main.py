@@ -72,9 +72,9 @@ app = FastAPI(
 )
 
 # Configure CORS
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
-if _raw_origins == "*":
-    # In development, we allow common ports and local IPs
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+if not _raw_origins:
+    # Default to development origins
     _allowed_origins = [
         "http://localhost:5173",
         "http://localhost:5174",
@@ -82,8 +82,10 @@ if _raw_origins == "*":
         "http://127.0.0.1:5174",
         "http://192.168.1.6:5173",
         "http://192.168.1.6:5174",
-        "http://localhost:3000", # Common for CRA
+        "http://localhost:3000",
     ]
+elif _raw_origins == "*":
+    _allowed_origins = ["*"]
 else:
     _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
