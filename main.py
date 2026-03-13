@@ -401,8 +401,12 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
     all_logs_cursor = attendance_logs_collection.find({
         "user_id": str(user["_id"]),
         "timestamp": {"$gte": seven_days_ago}
-    })
+    }).sort("timestamp", -1)
     all_logs = await all_logs_cursor.to_list(length=500)
+    
+    # Reverse to process chronologically if needed, but for status we need chron order
+    all_logs.reverse() 
+
 
     daily_hours = {}
     total_week_hours = 0.0
