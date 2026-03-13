@@ -83,6 +83,8 @@ if not _raw_origins:
         "http://192.168.1.6:5173",
         "http://192.168.1.6:5174",
         "http://localhost:3000",
+        "https://attendence-inofice-admin-desk-bza5cuwtz.vercel.app",
+        "https://attendence-inofice-admin-desk.vercel.app",
     ]
 elif _raw_origins == "*":
     _allowed_origins = ["*"]
