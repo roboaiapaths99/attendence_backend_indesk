@@ -65,7 +65,7 @@ from fastapi import BackgroundTasks
 APP_ENV = os.getenv("APP_ENV", "development")
 
 app = FastAPI(
-    title="LogDay AI Attendance API",
+    title="Log Day AI Attendance API",
     version="1.0.0",
     docs_url="/docs" if APP_ENV != "production" else None,
     redoc_url="/redoc" if APP_ENV != "production" else None,
