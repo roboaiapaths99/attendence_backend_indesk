@@ -3894,7 +3894,7 @@ async def get_nudge_history(manager=Depends(get_current_employee)):
 @app.post("/admin/nudge")
 async def admin_send_nudge(req: dict, admin=Depends(get_current_admin)):
     """Admin sends a motivational nudge to field team members in their organization."""
-    org_id = admin.get("organization_id")
+    org_id = admin.organization_id
     employee_emails = req.get("employee_emails", [])
     message = req.get("message", "").strip()
     nudge_type = req.get("nudge_type", "general")
@@ -3919,8 +3919,8 @@ async def admin_send_nudge(req: dict, admin=Depends(get_current_admin)):
         raise HTTPException(status_code=400, detail="No valid employees found in your organization.")
 
     nudge_log = {
-        "admin_id": admin["email"],
-        "admin_name": admin.get("name", admin["email"]),
+        "admin_id": admin.email,
+        "admin_name": admin.full_name,
         "organization_id": org_id,
         "recipients": valid_recipients,
         "message": message,
@@ -3940,8 +3940,8 @@ async def admin_send_nudge(req: dict, admin=Depends(get_current_admin)):
 async def admin_get_nudge_history(admin=Depends(get_current_admin)):
     """Fetch history of nudges sent by admins in this organization."""
     query = {}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
         
     logs = await nudge_logs_collection.find(query).sort("sent_at", -1).to_list(length=50)
 
@@ -3957,7 +3957,7 @@ async def get_admin_leaderboard(admin=Depends(get_current_admin)):
     """
     Weekly leaderboard for Admin Portal: Top 10 agents in the organization.
     """
-    org_id = admin.get("organization_id")
+    org_id = admin.organization_id
 
     # Current week boundaries (Mon 00:00 → Sun 23:59)
     today = datetime.now(timezone.utc)
@@ -4047,6 +4047,147 @@ async def get_sync_status(last_sync: Optional[str] = None, employee=Depends(get_
         "latest_profile": profile,
         "server_time": now.isoformat(),
         "requires_full_sync": True
+    }
+
+
+@app.get("/admin/reports/employee-monthly-summary")
+async def get_employee_monthly_summary(
+    email: str,
+    month: str,  # Format: YYYY-MM
+    admin=Depends(get_current_admin)
+):
+    """
+    Get a detailed monthly summary for a specific employee.
+    Used for individual drill-down reports.
+    """
+    try:
+        start_date = datetime.strptime(f"{month}-01", "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        # End date is first day of next month
+        year, m = map(int, month.split("-"))
+        if m == 12:
+            next_month = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            next_month = datetime(year, m + 1, 1, tzinfo=timezone.utc)
+            
+        end_date = next_month
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format. Expected YYYY-MM")
+
+    # Security: Ensure admin only sees their org's data
+    org_filter = {"organization_id": admin.organization_id} if admin.organization_id else {}
+    
+    # 1. Fetch Employee Details
+    employee = await employees_collection.find_one({"email": email, **org_filter})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # 2. Fetch All Logs for the month
+    logs = await attendance_logs_collection.find({
+        "email": email,
+        "timestamp": {"$gte": start_date, "$lt": end_date}
+    }).sort("timestamp", 1).to_list(length=1000)
+
+    # 3. Fetch Approved Leaves for the month
+    leaves = await leave_requests_collection.find({
+        "sender_email": email,
+        "status": "APPROVED",
+        "$or": [
+            {"start_date": {"$gte": start_date, "$lt": end_date}},
+            {"end_date": {"$gte": start_date, "$lt": end_date}}
+        ]
+    }).to_list(length=50)
+
+    # 4. Process Data Day by Day
+    daily_breakdown = []
+    total_working_ms = 0
+    present_days = 0
+    
+    current_day = start_date
+    while current_day < end_date:
+        next_day = current_day + timedelta(days=1)
+        day_str = current_day.strftime("%Y-%m-%d")
+        
+        # Filter logs for this day
+        day_logs = [l for l in logs if current_day <= l["timestamp"].replace(tzinfo=timezone.utc) < next_day]
+        
+        day_info = {
+            "date": day_str,
+            "status": "Absent",
+            "first_in": None,
+            "last_out": None,
+            "duration_hours": 0,
+            "logs": []
+        }
+
+        # Check for Weekend (Saturday=5, Sunday=6)
+        if current_day.weekday() >= 5:
+            day_info["status"] = "Weekend"
+
+        # Check for Leave
+        for leave in leaves:
+            l_start = leave["start_date"].replace(tzinfo=timezone.utc)
+            l_end = leave["end_date"].replace(tzinfo=timezone.utc)
+            if l_start <= current_day <= l_end:
+                day_info["status"] = f"Leave ({leave.get('leave_type', 'General')})"
+                break
+
+        if day_logs:
+            day_info["status"] = "Present"
+            present_days += 1
+            
+            # Find Check-In / Check-Out pairs for duration
+            day_logs.sort(key=lambda x: x["timestamp"])
+            day_info["first_in"] = day_logs[0]["timestamp"].isoformat()
+            
+            # Calculate duration: simplify by taking last check-out - first check-in
+            # Better: sum durations between paired IN and OUT
+            day_duration_ms = 0
+            last_in_time = None
+            
+            for log in day_logs:
+                # Basic representation for frontend
+                day_info["logs"].append({
+                    "time": log["timestamp"].isoformat(),
+                    "type": log["type"],
+                    "method": log.get("check_in_method", "N/A"),
+                    "location": log.get("location"),
+                    "selfie": log.get("selfie_url"),
+                    "wifi": log.get("wifi_details")
+                })
+
+                if log["type"] == "check-in":
+                    last_in_time = log["timestamp"]
+                elif log["type"] == "check-out" and last_in_time:
+                    delta = log["timestamp"] - last_in_time
+                    day_duration_ms += delta.total_seconds() * 1000
+                    last_in_time = None
+                    day_info["last_out"] = log["timestamp"].isoformat()
+
+            day_info["duration_hours"] = round(day_duration_ms / (1000 * 3600), 2)
+            total_working_ms += day_duration_ms
+
+        daily_breakdown.append(day_info)
+        current_day = next_day
+
+    # 5. Summary Metrics
+    total_hours = round(total_working_ms / (1000 * 3600), 2)
+    avg_hours = round(total_hours / present_days, 2) if present_days > 0 else 0
+
+    return {
+        "employee": {
+            "full_name": employee.get("full_name"),
+            "email": employee.get("email"),
+            "designation": employee.get("designation"),
+            "department": employee.get("department"),
+            "employee_type": employee.get("employee_type")
+        },
+        "summary": {
+            "total_working_hours": total_hours,
+            "average_daily_hours": avg_hours,
+            "present_days": present_days,
+            "leaves_taken": len(leaves)
+        },
+        "daily_breakdown": daily_breakdown
     }
 
 
