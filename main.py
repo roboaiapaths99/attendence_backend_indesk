@@ -290,7 +290,7 @@ async def health_check():
         db_status = "connected"
     except Exception as e:
         db_status = f"error: {str(e)}"
-    return {"api": "online", "database": db_status}
+    return {"api": "LogDay AI Attendance API", "status": "healthy", "database": db_status}
 
 
 @app.post("/register", response_model=LoginResponse)
