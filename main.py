@@ -154,10 +154,7 @@ async def startup_event():
     logger.info(f"Application startup complete. ENV={APP_ENV}")
 
 # --- HEALTH CHECK ENDPOINT ---
-@app.get("/health", tags=["System"])
-async def health_check():
-    """Used by load balancers and uptime monitors."""
-    return {"status": "ok", "env": APP_ENV, "version": "1.0.0"}
+# (Moved to line 284 for consolidation)
 
 async def send_security_alert_notification(alert_type: str, employee_email: str, detail: str):
     """
@@ -281,7 +278,7 @@ async def root():
     return {"message": "LogDay AI Attendance API is active", "status": "online"}
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 async def health_check():
     """Health check endpoint to verify API and DB are connected."""
     try:
@@ -290,7 +287,13 @@ async def health_check():
         db_status = "connected"
     except Exception as e:
         db_status = f"error: {str(e)}"
-    return {"api": "LogDay AI Attendance API", "status": "healthy", "database": db_status}
+    return {
+        "api": "LogDay AI Attendance API",
+        "status": "healthy",
+        "env": APP_ENV,
+        "database": db_status,
+        "version": "1.0.0"
+    }
 
 
 @app.post("/register", response_model=LoginResponse)
