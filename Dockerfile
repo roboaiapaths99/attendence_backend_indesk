@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ─── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -m -u 1000 appuser
+WORKDIR /app
+RUN mkdir -p uploads logs && chown -R appuser:appuser /app
 USER appuser
 ENV PATH="/home/appuser/.local/bin:$PATH"
-
-WORKDIR /app
 
 # ─── Python dependencies ─────────────────────────────────────────────────────
 COPY --chown=appuser requirements.txt .
@@ -25,9 +25,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # ─── Application code ────────────────────────────────────────────────────────
 COPY --chown=appuser . .
-
-# Ensure uploads and logs dirs exist
-RUN mkdir -p uploads logs
 
 # ─── Expose & Config ─────────────────────────────────────────────────────────
 EXPOSE 8001
@@ -39,9 +36,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # ─── Start command ───────────────────────────────────────────────────────────
 # For production: 2 uvicorn workers via gunicorn
 CMD ["gunicorn", "main:app", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--workers", "2", \
-     "--bind", "0.0.0.0:8001", \
-     "--timeout", "120", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+    "--worker-class", "uvicorn.workers.UvicornWorker", \
+    "--workers", "2", \
+    "--bind", "0.0.0.0:8001", \
+    "--timeout", "120", \
+    "--access-logfile", "-", \
+    "--error-logfile", "-"]
