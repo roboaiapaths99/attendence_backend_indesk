@@ -65,7 +65,7 @@ from fastapi import BackgroundTasks
 APP_ENV = os.getenv("APP_ENV", "development")
 
 app = FastAPI(
-    title="OfficeFlow AI Attendance API",
+    title="LogDay AI Attendance API",
     version="1.0.0",
     docs_url="/docs" if APP_ENV != "production" else None,
     redoc_url="/redoc" if APP_ENV != "production" else None,
@@ -278,7 +278,7 @@ async def startup_db_client():
 
 @app.get("/")
 async def root():
-    return {"message": "OfficeFlow AI Attendance API is active", "status": "online"}
+    return {"message": "LogDay AI Attendance API is active", "status": "online"}
 
 
 @app.get("/health")
@@ -1167,7 +1167,7 @@ async def admin_export_logs_pdf(current_admin: Admin = Depends(get_current_admin
         elements = []
         
         styles = getSampleStyleSheet()
-        elements.append(Paragraph("OfficeFlow Attendance Audit Report", styles['Title']))
+        elements.append(Paragraph("LogDay Attendance Audit Report", styles['Title']))
         elements.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}", styles['Normal']))
         elements.append(Spacer(1, 20))
         
