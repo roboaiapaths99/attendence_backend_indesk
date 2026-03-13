@@ -93,8 +93,11 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=_allowed_origins + [
+        "http://localhost",
+        "http://10.0.2.2", # Android emulator
+    ],
+    allow_origin_regex=r"https?://.*", # Very permissive for debugging, will narrow later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1794,6 +1797,7 @@ async def get_public_settings():
 @app.get("/organizations/search")
 async def search_organizations(q: str):
     """Public search for organizations by name or slug."""
+    logger.info(f"[SEARCH] Query received: '{q}'")
     if not q or len(q) < 2:
         return []
         
