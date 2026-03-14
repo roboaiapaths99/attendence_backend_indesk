@@ -2912,7 +2912,7 @@ async def get_leave_discussion(request_id: str, auth_data=Depends(get_current_an
     user, role = auth_data
     # Access check: Admin of same org or the employee themselves
     if role == "admin":
-        admin_org = user.get("organization_id")
+        admin_org = user.organization_id
         # Global superadmin (no org_id) can see all
         if admin_org and admin_org != req.get("organization_id"):
              raise HTTPException(status_code=403, detail="Access denied")
@@ -2935,9 +2935,16 @@ async def post_leave_message(request_id: str, payload: dict, auth_data=Depends(g
         
     user, role = auth_data
     
+    if role == "admin":
+        sender_id = user.email
+        sender_name = user.full_name
+    else:
+        sender_id = user.get("email")
+        sender_name = user.get("full_name", user.get("name", "Unknown"))
+
     message = {
-        "sender_id": user.get("email"),
-        "sender_name": user.get("full_name", user.get("name", "Unknown")),
+        "sender_id": sender_id,
+        "sender_name": sender_name,
         "role": role,
         "message": payload["message"],
         "timestamp": datetime.now(timezone.utc)
