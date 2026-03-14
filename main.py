@@ -2410,8 +2410,8 @@ async def submit_km_reimbursement(req: dict, employee=Depends(get_current_employ
 async def admin_list_km_claims(status: Optional[str] = "pending", admin=Depends(get_current_admin)):
     """List KM reimbursement claims for approval."""
     query = {}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
     if status:
         query["status"] = status
         
@@ -2432,12 +2432,12 @@ async def process_km_reimbursement(claim_id: str, action: str, admin=Depends(get
     new_status = "approved" if action == "approve" else "rejected"
     
     query = {"_id": ObjectId(claim_id)}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
 
     update_data = {
         "status": new_status,
-        "approved_by": admin["email"],
+        "approved_by": admin.email,
         "approved_at": datetime.now(timezone.utc)
     }
     
@@ -2530,8 +2530,8 @@ async def update_territory(email: str, req: dict, admin=Depends(get_current_admi
     """Update geofence/territory for a specific agent. Supports both radius and polygon."""
     # Build org-scoped query
     query = {"email": email}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
 
     update_fields = {
         "territory_type": req.get("territory_type", "radius"),
@@ -2596,7 +2596,7 @@ async def update_visit_plan(plan_id: str, req: dict, admin=Depends(get_current_a
         if comments is not None:
             update_data["manager_comments"] = comments
             update_data["reviewed_at"] = datetime.now(timezone.utc)
-            update_data["reviewed_by"] = admin["email"]
+            update_data["reviewed_by"] = admin.email
 
         result = await visit_plans_collection.update_one(
             {"_id": ObjectId(plan_id)},
@@ -2620,14 +2620,14 @@ async def generate_attendance_otp(employee_id: str, admin=Depends(get_current_ad
     
     # Update employee record with OTP
     result = await employees_collection.update_one(
-        {"email": employee_id, "organization_id": admin["organization_id"]},
+        {"email": employee_id, "organization_id": admin.organization_id},
         {"$set": {"gps_otp": otp, "gps_otp_expiry": expiry}}
     )
     
     if result.matched_count == 0:
         # Try finding by employee_id field if email match failed
         result = await employees_collection.update_one(
-            {"employee_id": employee_id, "organization_id": admin["organization_id"]},
+            {"employee_id": employee_id, "organization_id": admin.organization_id},
             {"$set": {"gps_otp": otp, "gps_otp_expiry": expiry}}
         )
         
@@ -2660,7 +2660,7 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
     
     # Alerts & Fraud Detection Stats
     alert_query = {
-        "organization_id": admin.get("organization_id"), 
+        "organization_id": admin.organization_id, 
         "timestamp": {"$gte": today_start},
         "employee_id": {"$in": [e.get("email") for e in org_employees]} if "manager_id" in filter_query else {"$exists": True}
     }
@@ -2671,7 +2671,7 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
     # Real on_leave count: approved leaves covering today
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     leave_query = {
-        "organization_id": admin.get("organization_id"),
+        "organization_id": admin.organization_id,
         "status": "approved",
         "start_date": {"$lte": today_str},
         "end_date": {"$gte": today_str}
@@ -2730,7 +2730,7 @@ async def create_leave_request(req: dict, employee=Depends(get_current_employee)
         
         new_request = {
             "employee_id": employee["email"],
-            "organization_id": employee["organization_id"],
+            "organization_id": employee.get("organization_id", "system_org"),
             "leave_type": req["leave_type"], # sick, casual, on_duty, other
             "start_date": req["start_date"],
             "end_date": req["end_date"],
@@ -2849,14 +2849,14 @@ async def admin_get_leave_requests(status: Optional[str] = None, admin: dict = D
     filter_query = get_employee_filter(admin)
     
     # Map get_employee_filter logic to leave requests
-    org_id = admin.get("organization_id")
+    org_id = admin.organization_id
     leave_query = {}
     if org_id:
         leave_query["organization_id"] = org_id
         
-    if "manager_id" in filter_query:
+    if admin.role == "manager":
         # Find all employees for this manager
-        org_employees = await employees_collection.find(filter_query, {"email": 1}).to_list(None)
+        org_employees = await employees_collection.find({"organization_id": org_id, "manager_id": admin.email}, {"email": 1}).to_list(None)
         emp_emails = [e.get("email") for e in org_employees if e.get("email")]
         leave_query["employee_id"] = {"$in": emp_emails}
         
@@ -2978,10 +2978,10 @@ async def handle_leave_request(request_id: str, action: str, admin: dict = Depen
     filter_query = get_employee_filter(admin)
     if "manager_id" in filter_query:
         # Check if the employee belongs to this manager
-        emp = await employees_collection.find_one({"email": leave_req["employee_id"], "manager_id": admin["email"]})
+        emp = await employees_collection.find_one({"email": leave_req["employee_id"], "manager_id": admin.email})
         if not emp:
             raise HTTPException(status_code=403, detail="Access denied: You can only manage leaves for your direct reports.")
-    elif admin.get("organization_id") and admin.get("organization_id") != leave_req.get("organization_id"):
+    elif admin.organization_id and admin.organization_id != leave_req.get("organization_id"):
         raise HTTPException(status_code=403, detail="Access denied: This request belongs to another organization.")
 
     # 3. Update Request
@@ -2990,7 +2990,7 @@ async def handle_leave_request(request_id: str, action: str, admin: dict = Depen
         {"$set": {
             "status": status_map[action],
             "processed_at": datetime.now(timezone.utc),
-            "processed_by": admin["email"]
+            "processed_by": admin.email
         }}
     )
         
@@ -3111,8 +3111,8 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
 async def list_employees(admin=Depends(get_current_admin)):
     """List all employees scoped to the admin's organization."""
     query = {}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
     employees = await employees_collection.find(query).to_list(length=1000)
     for emp in employees:
         emp["_id"] = str(emp["_id"])
@@ -3186,8 +3186,8 @@ async def get_my_expenses(employee=Depends(get_current_employee)):
 async def admin_list_expenses(status: Optional[str] = None, admin=Depends(get_current_admin)):
     """Admin fetches all expense claims, optionally filtered by status."""
     query = {}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
     if status:
         query["status"] = status
     
@@ -3211,8 +3211,8 @@ async def admin_update_expense(claim_id: str, req: dict, admin=Depends(get_curre
     action = req.get("action", "approve")  # approve | reject | query
     
     query = {"_id": ObjectId(claim_id)}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    if admin.organization_id:
+        query["organization_id"] = admin.organization_id
 
     update_fields = {}
     if action == "approve":
@@ -3247,7 +3247,7 @@ async def get_alerts(
     admin=Depends(get_current_admin)
 ):
     """Retrieve filtered security and operational alerts."""
-    query = {"organization_id": admin["organization_id"]}
+    query = {"organization_id": admin.organization_id}
     if type: query["type"] = type
     if severity: query["severity"] = severity
     if status and status != "all": query["status"] = status
@@ -3274,7 +3274,7 @@ async def update_alert_status(alert_id: str, req: dict, admin=Depends(get_curren
         raise HTTPException(status_code=400, detail="Invalid status")
 
     result = await alerts_collection.update_one(
-        {"_id": ObjectId(alert_id), "organization_id": admin["organization_id"]},
+        {"_id": ObjectId(alert_id), "organization_id": admin.organization_id},
         {"$set": {"status": status, "resolved_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -3444,7 +3444,7 @@ async def agent_performance_report(
     admin=Depends(get_current_admin)
 ):
     """Aggregate visits and distance per agent."""
-    org_id = admin["organization_id"]
+    org_id = admin.organization_id
     
     if not start_date or not end_date:
         now = datetime.now(timezone.utc)
@@ -3573,7 +3573,7 @@ async def conversion_funnel_report(
     admin=Depends(get_current_admin)
 ):
     """Aggregate visit outcomes for funnel visualization."""
-    org_id = admin["organization_id"]
+    org_id = admin.organization_id
     
     if not start_date or not end_date:
         now = datetime.now(timezone.utc)
@@ -3615,7 +3615,7 @@ async def visit_frequency_report(
     admin=Depends(get_current_admin)
 ):
     """Daily trends analysis."""
-    org_id = admin["organization_id"]
+    org_id = admin.organization_id
     
     if not start_date or not end_date:
         now = datetime.now(timezone.utc)
