@@ -535,12 +535,21 @@ async def update_face(req: UpdateFaceRequest):
 @app.get("/organization/discover/{slug}")
 async def discover_organization(slug: str):
     """Public endpoint for mobile app to discover organization and its branding."""
-    org = await organizations_collection.find_one({"slug": slug})
+    # 1. Try exact slug match (case-insensitive)
+    org = await organizations_collection.find_one({"slug": slug.lower()})
+    
+    # 2. Try name match if slug fails (case-insensitive)
+    if not org:
+        org = await organizations_collection.find_one(
+            {"name": {"$regex": f"^{slug}$", "$options": "i"}}
+        )
+
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
     return {
         "organization_id": str(org["_id"]),
+        "slug": org.get("slug"),
         "name": org.get("name") or org.get("org_name"),
         "logo_url": org.get("logo_url"),
         "primary_color": org.get("primary_color", "#0f172a")
@@ -1380,6 +1389,7 @@ async def register_organization(req: OrganizationRegisterRequest):
         return {
             "message": f"Organization '{req.org_name}' registered successfully!",
             "organization_id": org_id,
+            "org_slug": req.org_slug,
             "admin_email": req.admin_email
         }
     except HTTPException:
