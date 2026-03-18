@@ -826,8 +826,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             background_tasks.add_task(
                 trigger_alert, 
                 "Territory", 
-                user["email"], 
-                user["organization_id"], 
+                user.get("email"), 
+                user.get("organization_id"), 
                 "Mock Location detected during attendance.", 
                 "high",
                 {"lat": req.lat, "long": req.long}
@@ -839,9 +839,9 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             background_tasks.add_task(
                 trigger_alert, 
                 "Identity", 
-                user["email"], 
-                user["organization_id"], 
-                f"Device mismatch. Registered: {user['device_id']}, Current: {req.device_id}", 
+                user.get("email"), 
+                user.get("organization_id"), 
+                f"Device mismatch. Registered: {user.get('device_id')}, Current: {req.device_id}", 
                 "medium"
             )
             # We log it but maybe don't block yet or block based on config. For now, let's block to be safe.
@@ -855,8 +855,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             background_tasks.add_task(
                 trigger_alert, 
                 "Identity", 
-                user["email"], 
-                user["organization_id"], 
+                user.get("email"), 
+                user.get("organization_id"), 
                 f"Face verification failed with confidence distance {distance:.3f}", 
                 "medium"
             )
@@ -914,8 +914,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                         background_tasks.add_task(
                             trigger_alert, 
                             "Territory", 
-                            user["email"], 
-                            user["organization_id"], 
+                            user.get("email"), 
+                            user.get("organization_id"), 
                             f"Territory Breach. Agent is {dist:.0f}m away from beat zone center.", 
                             "medium",
                             {"lat": req.lat, "long": req.long, "allowed_radius": t_radius}
@@ -929,8 +929,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                         background_tasks.add_task(
                             trigger_alert, 
                             "Territory", 
-                            user["email"], 
-                            user["organization_id"], 
+                            user.get("email"), 
+                            user.get("organization_id"), 
                             "Territory Breach. Agent is outside assigned polygon zone.", 
                             "medium",
                             {"lat": req.lat, "long": req.long}
@@ -974,8 +974,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Execution Error in smart_attendance: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal processing error in attendance module.")
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Execution Error in smart_attendance: {e}\n{error_trace}")
+        raise HTTPException(status_code=500, detail=f"Internal processing error in attendance module: {type(e).__name__} - {str(e)}")
 
 
 def calculate_haversine(lat1, lon1, lat2, lon2):

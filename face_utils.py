@@ -74,7 +74,14 @@ def verify_face(img_base64, stored_embedding, threshold=0.40):
     a = np.array(new_embedding)
     b = np.array(stored_embedding)
     
-    cos_sim = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    
+    if norm_a == 0 or norm_b == 0:
+        logger.warning("Zero norm detected in face embedding comparison.")
+        return False, 1.0
+        
+    cos_sim = np.dot(a, b) / (norm_a * norm_b)
     distance = 1 - cos_sim
     
     return distance <= threshold, distance
