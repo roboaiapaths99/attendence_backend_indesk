@@ -404,9 +404,11 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
     }).sort("timestamp", -1)
     all_logs = await all_logs_cursor.to_list(length=500)
     
-    # Reverse to process chronologically if needed, but for status we need chron order
-    all_logs.reverse() 
-
+    # We also need the VERY LATEST log (regardless of the 7-day window) for the current status
+    latest_log = await attendance_logs_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("timestamp", -1)]
+    )
 
     daily_hours = {}
     total_week_hours = 0.0
@@ -414,6 +416,11 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
     on_time_count = 0
     current_status = "check-out"
 
+    # Set current status based on the absolute latest log
+    if latest_log:
+        current_status = latest_log.get("type", "check-out")
+
+    # Process logs for hours and stats
     for log in all_logs:
         log_time_raw = log.get("timestamp")
         if not log_time_raw:
@@ -431,12 +438,6 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
 
         date_str = log_time.strftime("%Y-%m-%d")
         log_type = log.get("type", "")
-
-        # Accumulate Today's check-in status
-        if date_str == today_str and log_type == "check-in":
-            current_status = "check-in"
-        if date_str == today_str and log_type == "check-out":
-            current_status = "check-out"
 
         # Accumulate hours from check-out logs
         if log_type == "check-out":
@@ -804,9 +805,9 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         logger.info(f"Processing {attendance_type_str(attendance_type)} for {user['email']} (Role: {role})")
 
         # Session Validation: Prevent duplicate check-ins or orphan check-outs
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Removed the 'today_start' restriction to support state-based shifts (e.g. shifts crossing midnight)
         last_log = await attendance_logs_collection.find_one(
-            {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start}},
+            {"user_id": str(user["_id"])},
             sort=[("timestamp", -1)]
         )
 
