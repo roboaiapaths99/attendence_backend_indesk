@@ -882,7 +882,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                  )
             
             # DESK: Office Geofence with transparency
-            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15)) # Default 15m for better GPS tolerance
+            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40)) # Default 40m for better GPS tolerance
             dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
             
             if dist > radius:
