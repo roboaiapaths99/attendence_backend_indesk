@@ -47,7 +47,7 @@ def get_face_embedding(img_base64):
         results = DeepFace.represent(
             img_path=temp_path, 
             model_name="VGG-Face", # Fast and reliable
-            detector_backend="retinaface", # Accurate detection
+            detector_backend="opencv", # Super fast for enterprise response
             enforce_detection=True
         )
         

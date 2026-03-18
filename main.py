@@ -752,10 +752,13 @@ async def verify_presence(req: VerifyPresenceRequest):
         "email": req.email,
         "timestamp": datetime.utcnow(),
         "type": attendance_type,
+        "status": "SUCCESS",
         "location": {"lat": req.lat, "long": req.long},
+        "location_name": req.address or "Verified Zone",
         "distance_meters": dist_meters,
         "wifi_info": {"bssid": req.wifi_bssid, "strength": req.wifi_strength},
         "face_confidence": float(distance),
+        "device_id": req.device_id
     }
     await attendance_logs_collection.insert_one(log)
 
@@ -949,9 +952,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             "check_in_method": check_in_method,
             "wifi_confidence": wifi_pct if role == EmployeeType.DESK else 0,
             "confidence_score": float(distance),
-            "status": "Present",
+            "status": "SUCCESS",
+            "location_name": req.address or ("Office Zone" if role == EmployeeType.DESK else "Field Location"),
             "selfie_verified": True,
-            "device_id": req.device_id, # Track device for security
+            "device_id": req.device_id,
             "mock_location_detected": req.mock_detected
         }
         
@@ -963,7 +967,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         return {
             "status": "success",
             "type": attendance_type,
-            "message": f"Enterprise {attendance_type.replace('-', ' ')} recorded via {check_in_method.value}.",
+            "message": f"Attendance {attendance_type.replace('-', ' ').title()} Successful. Verified via {check_in_method.value.replace('_', ' ').title()}.",
             "time": log["timestamp"].isoformat()
         }
 
