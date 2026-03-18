@@ -296,6 +296,10 @@ class SystemSettings(BaseModel):
     timezone_offset: int = 330
     primary_color: Optional[str] = "#6366f1"
     logo_url: Optional[str] = None
+    office_lat: float = 0.0
+    office_long: float = 0.0
+    office_wifi_ssid: Optional[str] = None
+    geofence_radius: float = 40.0
 
 
 # Field Force Specific Models

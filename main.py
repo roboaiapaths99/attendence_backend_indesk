@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, File, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from datetime import datetime, timezone, timedelta
@@ -41,6 +41,7 @@ load_dotenv()
 # Initialize Scheduler
 scheduler = AsyncIOScheduler()
 
+from jose import jwt
 from database import (
     employees_collection, attendance_logs_collection, settings_collection, admins_collection, 
     organizations_collection, visit_plans_collection, visit_logs_collection, 
@@ -56,7 +57,8 @@ from models import (
 )
 from auth import (
     get_password_hash, verify_password, create_access_token, 
-    get_current_admin, get_current_employee, admin_oauth2_scheme, employee_oauth2_scheme
+    get_current_admin, get_current_employee, admin_oauth2_scheme, employee_oauth2_scheme,
+    SECRET_KEY, ALGORITHM
 )
 from face_utils import get_face_embedding, verify_face, compare_faces
 from sheets_sync import sync_to_google_sheets, sync_visit_to_google_sheets
@@ -452,6 +454,10 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
             if log_time.hour < 9 or (log_time.hour == 9 and log_time.minute <= 15):
                 on_time_count += 1
 
+    # Get organization-specific WiFi SSID
+    org_settings = await settings_collection.find_one({"organization_id": current_user.get("organization_id")}) if current_user.get("organization_id") else None
+    wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID", "")
+
     return {
         "today_hours": round(today_hours, 2),
         "week_total": round(total_week_hours, 2),
@@ -459,17 +465,28 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
         "current_status": current_status,
         "on_time_count": on_time_count,
         "total_logs_week": len(all_logs),
-        "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", "").strip()
+        "office_wifi_ssid": wifi_ssid if wifi_ssid else ""
     }
 
 
 @app.post("/update-face")
 async def update_face(req: UpdateFaceRequest):
     """Securely update user face descriptors after location & password verification."""
-    # 1. Geofencing Validation (Strict 4m as requested)
-    office_lat = float(os.getenv("OFFICE_LAT", 0))
-    office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
+    # 1. Identity & Organization Verification
+    user = await employees_collection.find_one({"email": req.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if not verify_password(req.password, user["hashed_password"]):
+        raise HTTPException(status_code=403, detail="Incorrect password. Unauthorized re-enrollment.")
+
+    org_id = user.get("organization_id")
+    org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
+
+    # 2. Geofencing Validation (Using org settings if available)
+    office_lat = org_settings.get("office_lat", 0) if org_settings else float(os.getenv("OFFICE_LAT", 0))
+    office_long = org_settings.get("office_long", 0) if org_settings else float(os.getenv("OFFICE_LONG", 0))
+    radius = org_settings.get("geofence_radius", 15) if org_settings else float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
     
     dlat = math.radians(req.lat - office_lat)
     dlon = math.radians(req.long - office_long)
@@ -483,9 +500,8 @@ async def update_face(req: UpdateFaceRequest):
             detail=f"Biometric update restricted to Office Zone. You are {dist_meters:.1f}m away (Target: {radius}m)."
         )
 
-    # 2. WiFi Validation
-    target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-    target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
+    # 3. WiFi Validation
+    target_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID")
     wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
     REQUIRED_WIFI_PCT = 50
     
@@ -494,17 +510,6 @@ async def update_face(req: UpdateFaceRequest):
 
     if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Biometric update requires Office WiFi: {target_ssid}")
-         
-    if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
-        raise HTTPException(status_code=403, detail="BSSID mismatch. Security restriction for biometric updates.")
-
-    # 3. Identity Verification
-    user = await employees_collection.find_one({"email": req.email})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-        
-    if not verify_password(req.password, user["hashed_password"]):
-        raise HTTPException(status_code=403, detail="Incorrect password. Unauthorized re-enrollment.")
 
     # 4. Device Binding Check
     if user.get("device_id") and req.device_id and user["device_id"] != req.device_id:
@@ -784,10 +789,12 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
     - Both: Face Liveness/Match + Mock Detection.
     """
     try:
-        # 0. Global Telemetry Defaults
-        office_lat = float(os.getenv("OFFICE_LAT", 0))
-        office_long = float(os.getenv("OFFICE_LONG", 0))
+        # 0. Global Telemetry Defaults (Fetched later per org)
+        office_lat = 0
+        office_long = 0
+        radius = 40
         wifi_pct = 0
+        office_wifi_ssid = None
         
         # 1. Identity & Role Fetch
         user = await employees_collection.find_one({"email": req.email})
@@ -807,6 +814,15 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                 raise HTTPException(status_code=404, detail="Identity not recognized. Please sign in or register.")
 
         # At this point, 'user' is identified
+        org_id = user.get("organization_id")
+        org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
+        
+        # Use org settings if available, else fallback to global .env
+        office_lat = org_settings.get("office_lat", 0) if org_settings else float(os.getenv("OFFICE_LAT", 0))
+        office_long = org_settings.get("office_long", 0) if org_settings else float(os.getenv("OFFICE_LONG", 0))
+        radius = org_settings.get("geofence_radius", 40) if org_settings else float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+        office_wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID")
+
         role = user.get("employee_type", EmployeeType.DESK)
         attendance_type = req.intended_type or "check-in"
         logger.info(f"Processing {attendance_type.replace('-', ' ').title()} for {user['email']} (Role: {role})")
@@ -882,7 +898,6 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                  )
             
             # DESK: Office Geofence with transparency
-            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40)) # Default 40m for better GPS tolerance
             dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
             
             if dist > radius:
@@ -1536,6 +1551,7 @@ async def admin_list_employees(current_admin: Admin = Depends(get_current_admin)
     return employees
 
 
+
 @app.put("/admin/employees/{email}")
 async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: Admin = Depends(get_current_admin)):
     """Update employee details."""
@@ -1552,6 +1568,23 @@ async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: 
         raise HTTPException(status_code=404, detail="Employee not found")
         
     return {"message": "Employee updated successfully"}
+
+
+@app.post("/admin/employees/bulk-update-type")
+async def admin_bulk_update_employee_type(req: dict, current_admin: Admin = Depends(get_current_admin)):
+    """Bulk update employee work type (desk/field/office)"""
+    emails = req.get("employee_emails", [])
+    new_type = req.get("employee_type")
+    
+    if not emails or not new_type:
+        raise HTTPException(status_code=400, detail="employee_emails and employee_type are required")
+        
+    result = await employees_collection.update_many(
+        {"email": {"$in": emails}, "organization_id": current_admin.organization_id},
+        {"$set": {"employee_type": new_type}}
+    )
+    
+    return {"message": f"Successfully updated {result.modified_count} employees to {new_type}"}
 
 
 @app.delete("/admin/employees/{email}")
@@ -1625,6 +1658,7 @@ async def admin_create_employee(req: RegisterRequest, current_admin: Admin = Dep
         "device_id": None, # Force bind on first use
         "created_at": datetime.now(timezone.utc),
         "needs_face_enrollment": True if not embedding else False,
+        "employee_type": req.employee_type,
         "organization_id": current_admin.organization_id # Bind to admin's org
     }
 
@@ -1820,11 +1854,34 @@ async def admin_upload_logo(file: bytes = File(...), current_admin: Admin = Depe
 
 
 @app.get("/settings")
-async def get_public_settings():
-    """Public settings for mobile app (timings, etc.)."""
+async def get_public_settings(request: Request):
+    """Public settings for mobile app (timings, etc.). Supports Org-specific overrides if token present."""
+    auth_header = request.headers.get("Authorization")
+    org_id = None
+    
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            email = payload.get("sub")
+            if email:
+                user = await employees_collection.find_one({"email": email})
+                if user:
+                    org_id = user.get("organization_id")
+        except Exception:
+            pass # Invalid token, fall back to global
+            
+    if org_id:
+        settings = await settings_collection.find_one({"organization_id": org_id})
+        if settings:
+            settings["_id"] = str(settings["_id"])
+            return settings
+            
+    # Fallback to global config
     settings = await settings_collection.find_one({"id": "config"})
     if not settings:
         return SystemSettings().dict()
+    settings["_id"] = str(settings["_id"])
     return settings
 
 

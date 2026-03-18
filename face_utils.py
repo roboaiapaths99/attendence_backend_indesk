@@ -43,13 +43,34 @@ def get_face_embedding(img_base64):
             cv2.imwrite(temp.name, img)
             temp_path = temp.name
 
-        # Generate embedding
-        results = DeepFace.represent(
-            img_path=temp_path, 
-            model_name="VGG-Face", # Fast and reliable
-            detector_backend="opencv", # Super fast for enterprise response
-            enforce_detection=True
-        )
+        # Generate embedding with robust detector
+        # Try RetinaFace (accurate) first, then fallback
+        try:
+            results = DeepFace.represent(
+                img_path=temp_path, 
+                model_name="VGG-Face", 
+                detector_backend="retinaface", # Higher accuracy for enterprise
+                enforce_detection=True,
+                align=True
+            )
+        except Exception as e1:
+            logger.warning(f"RetinaFace failed: {e1}. Falling back to MTCNN.")
+            try:
+                results = DeepFace.represent(
+                    img_path=temp_path, 
+                    model_name="VGG-Face", 
+                    detector_backend="mtcnn", # Fast and reliable fallback
+                    enforce_detection=True,
+                    align=True
+                )
+            except Exception as e2:
+                logger.error(f"MTCNN failed: {e2}. Final fallback to OpenCV.")
+                results = DeepFace.represent(
+                    img_path=temp_path, 
+                    model_name="VGG-Face", 
+                    detector_backend="opencv", 
+                    enforce_detection=False # Last resort, allow even if detection fails
+                )
         
         os.unlink(temp_path)
         
@@ -57,7 +78,9 @@ def get_face_embedding(img_base64):
             return results[0]["embedding"]
         return None
     except Exception as e:
-        logger.error(f"Error generating embedding: {e}")
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        logger.error(f"Critical error in face embedding: {e}")
         return None
 
 
