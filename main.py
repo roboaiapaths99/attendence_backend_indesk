@@ -2506,27 +2506,18 @@ async def get_field_day_summary(employee_id: str, date: Optional[str] = None, cu
         "status": "completed"
     })
     
-    # 2. Daily KM Calculation (Simplified from pings)
-    pings = await location_pings_collection.find({
-        "employee_id": employee_id,
-        "recorded_at": {
-            "$gte": datetime.strptime(query_date, "%Y-%m-%d"),
-            "$lt": datetime.strptime(query_date, "%Y-%m-%d") + timedelta(days=1)
-        }
-    }).sort("recorded_at", 1).to_list(length=1000)
-    
-    total_km = 0
-    if len(pings) > 1:
-        for i in range(len(pings) - 1):
-            p1 = pings[i]
-            p2 = pings[i+1]
-            dist = calculate_haversine(p1["lat"], p1["lng"], p2["lat"], p2["lng"])
-            total_km += (dist / 1000)
+    # 3. Current Attendance Status
+    last_log = await attendance_logs_collection.find_one(
+        {"email": employee_id, "timestamp": {"$gte": datetime.strptime(query_date, "%Y-%m-%d"), "$lt": datetime.strptime(query_date, "%Y-%m-%d") + timedelta(days=1)}},
+        sort=[("timestamp", -1)]
+    )
+    current_status = last_log.get("type", "checkout") if last_log else "checkout"
             
     return {
         "date": query_date,
         "total_visits": visits,
         "total_km": round(total_km, 2),
+        "attendance_status": current_status,
         "status": "Active"
     }
 
