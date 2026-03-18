@@ -818,10 +818,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
         
         # Use org settings if available, else fallback to global .env
-        office_lat = org_settings.get("office_lat", 0) if org_settings else float(os.getenv("OFFICE_LAT", 0))
-        office_long = org_settings.get("office_long", 0) if org_settings else float(os.getenv("OFFICE_LONG", 0))
-        radius = org_settings.get("geofence_radius", 40) if org_settings else float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
-        office_wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID")
+        office_lat = org_settings.get("office_lat") if org_settings and org_settings.get("office_lat") else float(os.getenv("OFFICE_LAT", 0))
+        office_long = org_settings.get("office_long") if org_settings and org_settings.get("office_long") else float(os.getenv("OFFICE_LONG", 0))
+        radius = org_settings.get("geofence_radius") if org_settings and org_settings.get("geofence_radius") else float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+        office_wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings and org_settings.get("office_wifi_ssid") else os.getenv("OFFICE_WIFI_SSID")
 
         role = user.get("employee_type", EmployeeType.DESK)
         attendance_type = req.intended_type or "check-in"
@@ -889,18 +889,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         check_in_method = CheckInMethod.WIFI_GEOFENCE
 
         if role == EmployeeType.DESK:
-            # DESK: Relaxed WiFi Check (approx -75 dBm threshold)
-            wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
-            if wifi_pct < 50:
-                 raise HTTPException(
-                     status_code=403, 
-                     detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= 50%. Please move closer to the router."
-                 )
-            
             # DESK: Office Geofence with transparency
-            dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
+            dist = calculate_haversine(req.lat, req.long, float(office_lat), float(office_long))
             
-            if dist > radius:
+            if dist > float(radius):
                  raise HTTPException(
                      status_code=403, 
                      detail=f"Location error. You are {dist:.1f}m away from office center (Limit: {radius}m). Please stand near the entrance."
