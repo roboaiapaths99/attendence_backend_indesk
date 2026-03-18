@@ -469,7 +469,7 @@ async def update_face(req: UpdateFaceRequest):
     # 1. Geofencing Validation (Strict 4m as requested)
     office_lat = float(os.getenv("OFFICE_LAT", 0))
     office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 10))
+    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
     
     dlat = math.radians(req.lat - office_lat)
     dlon = math.radians(req.long - office_long)
@@ -480,17 +480,17 @@ async def update_face(req: UpdateFaceRequest):
     if dist_meters > radius:
         raise HTTPException(
             status_code=403,
-            detail=f"Biometric update restricted to Office Zone. You are {dist_meters:.0f}m away."
+            detail=f"Biometric update restricted to Office Zone. You are {dist_meters:.1f}m away (Target: {radius}m)."
         )
 
     # 2. WiFi Validation
     target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
     target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
     wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
-    REQUIRED_WIFI_PCT = 80
+    REQUIRED_WIFI_PCT = 50
     
     if wifi_pct < REQUIRED_WIFI_PCT:
-        raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Biometric update requires stable connection.")
+        raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= {REQUIRED_WIFI_PCT}% for stable enrollment.")
 
     if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Biometric update requires Office WiFi: {target_ssid}")
@@ -700,16 +700,17 @@ async def verify_presence(req: VerifyPresenceRequest):
 
     # 2. Face Verification
     is_match, distance = verify_face(req.image, user["face_embedding"])
+    if distance == 1.0:
+        raise HTTPException(status_code=400, detail="Biometric data mismatch. Please re-enroll your face in Profile.")
+    
     if not is_match:
         raise HTTPException(
             status_code=401,
             detail=f"Face verification failed (distance: {distance:.4f}). Please try again."
         )
-
-    # 3. Geofencing Validation
     office_lat = float(os.getenv("OFFICE_LAT", 0))
     office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 100))
+    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
 
     # Haversine distance (simplified for small distances)
     import math
@@ -722,13 +723,16 @@ async def verify_presence(req: VerifyPresenceRequest):
     if dist_meters > radius:
         raise HTTPException(
             status_code=403,
-            detail=f"You are {dist_meters:.0f}m away from office. Must be within {radius:.0f}m."
+            detail=f"You are {dist_meters:.1f}m away from office. Must be within {radius:.1f}m."
         )
 
     # 4. WiFi Validation
     target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
     target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-    min_strength = float(os.getenv("MIN_WIFI_SIGNAL_STRENGTH", -80))
+    
+    # Calculate signal percentage for consistency
+    wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
+    REQUIRED_WIFI_PCT = 50
 
     if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
         raise HTTPException(status_code=403, detail="Must be connected to Office WiFi (Bad BSSID)")
@@ -736,8 +740,8 @@ async def verify_presence(req: VerifyPresenceRequest):
     if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Must be connected to Office WiFi: {target_ssid}")
 
-    if req.wifi_strength < min_strength:
-        raise HTTPException(status_code=403, detail="WiFi signal too weak - are you inside the office?")
+    if wifi_pct < REQUIRED_WIFI_PCT:
+        raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= {REQUIRED_WIFI_PCT}% for verification.")
 
     # 5. Determine check-in or check-out
     last_log = await attendance_logs_collection.find_one(
@@ -851,6 +855,9 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             raise HTTPException(status_code=400, detail="Face biometric not enrolled for this user.")
         
         is_match, distance = verify_face(req.image, user["face_embedding"])
+        if distance == 1.0:
+            raise HTTPException(status_code=400, detail="Biometric data mismatch (format mismatch). Please re-enroll your face in the Profile screen.")
+
         if not is_match:
             background_tasks.add_task(
                 trigger_alert, 
@@ -866,17 +873,23 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         check_in_method = CheckInMethod.WIFI_GEOFENCE
 
         if role == EmployeeType.DESK:
-            # DESK: Strict WiFi Check
+            # DESK: Relaxed WiFi Check (approx -75 dBm threshold)
             wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
-            if wifi_pct < 80:
-                 raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Office attendance requires >= 80% signal.")
+            if wifi_pct < 50:
+                 raise HTTPException(
+                     status_code=403, 
+                     detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= 50%. Please move closer to the router."
+                 )
             
-            # DESK: Strict Office Geofence
-            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 10))
+            # DESK: Office Geofence with transparency
+            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15)) # Default 15m for better GPS tolerance
             dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
             
             if dist > radius:
-                 raise HTTPException(status_code=403, detail=f"Location error. You are {dist:.1f}m outside the designated office zone.")
+                 raise HTTPException(
+                     status_code=403, 
+                     detail=f"Location error. You are {dist:.1f}m away from office center (Limit: {radius}m). Please stand near the entrance."
+                 )
             check_in_method = CheckInMethod.WIFI_GEOFENCE
 
         else:

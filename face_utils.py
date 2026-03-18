@@ -32,7 +32,7 @@ def get_face_embedding(img_base64):
     """Generates a face embedding from a base64 image string."""
     # persona test bypass (Enabled for testing)
     if img_base64 == DUMMY_IMAGE_BYPASS:
-        return [0.1] * 128
+        return [0.1] * 4096
         
     try:
         # Save to temp file for DeepFace
@@ -74,6 +74,11 @@ def verify_face(img_base64, stored_embedding, threshold=0.40):
     a = np.array(new_embedding)
     b = np.array(stored_embedding)
     
+    # Check for shape mismatch (e.g., 4096 vs 128)
+    if a.shape != b.shape:
+        logger.error(f"Face embedding shape mismatch: {a.shape} vs {b.shape}. User must re-enroll.")
+        return False, 1.0 # Max distance to indicate failure
+
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
     
@@ -94,7 +99,15 @@ def compare_faces(embedding1, embedding2, threshold=0.40):
     a = np.array(embedding1)
     b = np.array(embedding2)
     
-    cos_sim = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    if a.shape != b.shape:
+        return False
+        
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0: 
+        return False
+
+    cos_sim = np.dot(a, b) / (norm_a * norm_b)
     distance = 1 - cos_sim
     
     return distance <= threshold
