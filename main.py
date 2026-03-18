@@ -469,7 +469,7 @@ async def update_face(req: UpdateFaceRequest):
     # 1. Geofencing Validation (Strict 4m as requested)
     office_lat = float(os.getenv("OFFICE_LAT", 0))
     office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 4))
+    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 10))
     
     dlat = math.radians(req.lat - office_lat)
     dlon = math.radians(req.long - office_long)
@@ -872,7 +872,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                  raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Office attendance requires >= 80% signal.")
             
             # DESK: Strict Office Geofence
-            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 4))
+            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 10))
             dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
             
             if dist > radius:
