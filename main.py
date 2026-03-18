@@ -817,9 +817,9 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         org_id = user.get("organization_id")
         org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
         
-        # Use org settings if available, else fallback to global .env
-        office_lat = org_settings.get("office_lat") if org_settings and org_settings.get("office_lat") else float(os.getenv("OFFICE_LAT", 0))
-        office_long = org_settings.get("office_long") if org_settings and org_settings.get("office_long") else float(os.getenv("OFFICE_LONG", 0))
+        # User explicitly requested to ALWAYS use coordinates from .env, ignoring the admin DB settings
+        office_lat = float(os.getenv("OFFICE_LAT", 0))
+        office_long = float(os.getenv("OFFICE_LONG", 0))
         radius = org_settings.get("geofence_radius") if org_settings and org_settings.get("geofence_radius") else float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
         office_wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings and org_settings.get("office_wifi_ssid") else os.getenv("OFFICE_WIFI_SSID")
 
