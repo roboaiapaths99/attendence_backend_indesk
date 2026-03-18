@@ -805,7 +805,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         # At this point, 'user' is identified
         role = user.get("employee_type", EmployeeType.DESK)
         attendance_type = req.intended_type or "check-in"
-        logger.info(f"Processing {attendance_type_str(attendance_type)} for {user['email']} (Role: {role})")
+        logger.info(f"Processing {attendance_type.replace('-', ' ').title()} for {user['email']} (Role: {role})")
 
         # Session Validation: Prevent duplicate check-ins or orphan check-outs
         # Removed the 'today_start' restriction to support state-based shifts (e.g. shifts crossing midnight)
