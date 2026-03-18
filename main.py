@@ -504,7 +504,7 @@ async def update_face(req: UpdateFaceRequest):
         raise HTTPException(status_code=404, detail="User not found")
         
     if not verify_password(req.password, user["hashed_password"]):
-        raise HTTPException(status_code=401, detail="Incorrect password. Unauthorized re-enrollment.")
+        raise HTTPException(status_code=403, detail="Incorrect password. Unauthorized re-enrollment.")
 
     # 4. Device Binding Check
     if user.get("device_id") and req.device_id and user["device_id"] != req.device_id:
@@ -705,7 +705,7 @@ async def verify_presence(req: VerifyPresenceRequest):
     
     if not is_match:
         raise HTTPException(
-            status_code=401,
+            status_code=400,
             detail=f"Face verification failed (distance: {distance:.4f}). Please try again."
         )
     office_lat = float(os.getenv("OFFICE_LAT", 0))
@@ -867,7 +867,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                 f"Face verification failed with confidence distance {distance:.3f}", 
                 "medium"
             )
-            raise HTTPException(status_code=401, detail="Face verification failed. Please ensure your face is clearly visible.")
+            raise HTTPException(status_code=400, detail="Face verification failed. Please ensure your face is clearly visible.")
 
         # 3. Branch Verification Logic
         check_in_method = CheckInMethod.WIFI_GEOFENCE
