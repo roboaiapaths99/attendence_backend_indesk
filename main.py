@@ -483,10 +483,10 @@ async def update_face(req: UpdateFaceRequest):
     org_id = user.get("organization_id")
     org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
 
-    # 2. Geofencing Validation (Using org settings if available)
-    office_lat = org_settings.get("office_lat", 0) if org_settings else float(os.getenv("OFFICE_LAT", 0))
-    office_long = org_settings.get("office_long", 0) if org_settings else float(os.getenv("OFFICE_LONG", 0))
-    radius = org_settings.get("geofence_radius", 15) if org_settings else float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
+    # 2. Geofencing Validation (STRICT: Always use .env values to avoid DB misconfiguration)
+    office_lat = float(os.getenv("OFFICE_LAT", 0))
+    office_long = float(os.getenv("OFFICE_LONG", 0))
+    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
     
     dlat = math.radians(req.lat - office_lat)
     dlon = math.radians(req.long - office_long)
@@ -500,13 +500,8 @@ async def update_face(req: UpdateFaceRequest):
             detail=f"Biometric update restricted to Office Zone. You are {dist_meters:.1f}m away (Target: {radius}m)."
         )
 
-    # 3. WiFi Validation
-    target_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID")
-    wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
-    REQUIRED_WIFI_PCT = 50
-    
-    if wifi_pct < REQUIRED_WIFI_PCT:
-        raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= {REQUIRED_WIFI_PCT}% for stable enrollment.")
+    # 3. WiFi Validation (SSID check only, no signal strength gate)
+    target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
     if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Biometric update requires Office WiFi: {target_ssid}")
