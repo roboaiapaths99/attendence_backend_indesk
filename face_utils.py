@@ -88,7 +88,8 @@ def verify_face(img_base64, stored_embedding, threshold=0.60):
     """Verifies a face against a stored embedding using cosine similarity."""
     new_embedding = get_face_embedding(img_base64)
     if new_embedding is None:
-        return False, 0.0
+        logger.warning("No face detected in the provided image.")
+        return False, 1.1 # No face detected
     
     # Simple cosine similarity manual calculation or use DeepFace.verify
     # DeepFace.verify is easier as it handles scaling
@@ -100,14 +101,14 @@ def verify_face(img_base64, stored_embedding, threshold=0.60):
     # Check for shape mismatch (e.g., 4096 vs 128)
     if a.shape != b.shape:
         logger.error(f"Face embedding shape mismatch: {a.shape} vs {b.shape}. User must re-enroll.")
-        return False, 1.0 # Max distance to indicate failure
+        return False, 1.2 # Shape mismatch
 
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
     
     if norm_a == 0 or norm_b == 0:
         logger.warning("Zero norm detected in face embedding comparison.")
-        return False, 1.0
+        return False, 1.3 # Zero norm
         
     cos_sim = np.dot(a, b) / (norm_a * norm_b)
     distance = 1 - cos_sim

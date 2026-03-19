@@ -449,10 +449,36 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
             if date_str == today_str:
                 today_hours += duration
 
-        # Count on-time check-ins (before 09:15)
+        # Count on-time check-ins using dynamic settings
         if log_type == "check-in":
-            if log_time.hour < 9 or (log_time.hour == 9 and log_time.minute <= 15):
-                on_time_count += 1
+            # Fetch settings for the organization
+            org_id = user.get("organization_id")
+            settings_doc = await settings_collection.find_one({"organization_id": org_id})
+            settings = settings_doc if settings_doc else SystemSettings().dict()
+            
+            user_type = user.get("employee_type", EmployeeType.DESK)
+            if user_type == EmployeeType.FIELD:
+                start_time_str = settings.get("field_office_start_time", "10:00")
+                threshold_mins = settings.get("field_late_threshold_mins", 30)
+            else:
+                start_time_str = settings.get("office_start_time", "09:00")
+                threshold_mins = settings.get("late_threshold_mins", 15)
+            
+            try:
+                start_h, start_m = map(int, start_time_str.split(":"))
+                # Adjust log_time for comparison if needed (log_time is UTC from DB)
+                # For analytics, we compare based on local hour/min
+                local_log_time = log_time + timedelta(minutes=settings.get("timezone_offset", 330))
+                
+                # Limit time for today
+                limit_time = local_log_time.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
+                
+                if local_log_time <= limit_time:
+                    on_time_count += 1
+            except Exception as e:
+                logger.error(f"Error calculating lateness in analytics: {e}")
+                # Fallback to a safer logic or mark as on-time? 
+                # User wants it to work with REAL input, so we should Log errors precisely
 
     # Get WiFi SSID strictly from .env
     wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
@@ -535,25 +561,41 @@ async def update_face(req: UpdateFaceRequest):
 @app.get("/organization/discover/{slug}")
 async def discover_organization(slug: str):
     """Public endpoint for mobile app to discover organization and its branding."""
-    # 1. Try exact slug match (case-insensitive)
-    org = await organizations_collection.find_one({"slug": slug.lower()})
-    
-    # 2. Try name match if slug fails (case-insensitive)
-    if not org:
-        org = await organizations_collection.find_one(
-            {"name": {"$regex": f"^{slug}$", "$options": "i"}}
-        )
-
+    org = await organizations_collection.find_one({"slug": slug})
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
+    # Also fetch settings for this org
+    settings = await settings_collection.find_one({"organization_id": str(org["_id"])})
+    
     return {
-        "organization_id": str(org["_id"]),
-        "slug": org.get("slug"),
-        "name": org.get("name") or org.get("org_name"),
+        "id": str(org["_id"]),
+        "name": org["name"],
         "logo_url": org.get("logo_url"),
-        "primary_color": org.get("primary_color", "#0f172a")
+        "primary_color": org.get("primary_color", "#0f172a"),
+        "settings": settings or SystemSettings().dict()
     }
+
+
+@app.get("/settings")
+async def get_default_settings():
+    """Default settings endpoint for apps without a slug context."""
+    return SystemSettings().dict()
+
+@app.get("/settings/{slug}")
+async def get_public_settings(slug: str):
+    """Public endpoint for apps to fetch organization settings by slug."""
+    # Handle "null" or "undefined" string from frontend JS
+    if not slug or slug in ["null", "undefined", "generic"]:
+        return SystemSettings().dict()
+        
+    org = await organizations_collection.find_one({"slug": slug})
+    if not org:
+        # Fallback to default instead of 404 to prevent app crashes
+        return SystemSettings().dict()
+    
+    settings_doc = await settings_collection.find_one({"organization_id": str(org["_id"])})
+    return settings_doc if settings_doc else SystemSettings().dict()
 
 
 from fastapi import Request
@@ -858,8 +900,12 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             raise HTTPException(status_code=400, detail="Face biometric not enrolled for this user.")
         
         is_match, distance = verify_face(req.image, user["face_embedding"])
-        if distance == 1.0:
-            raise HTTPException(status_code=400, detail="Biometric data mismatch (format mismatch). Please re-enroll your face in the Profile screen.")
+        if distance == 1.1:
+            raise HTTPException(status_code=400, detail="No face detected. Please ensure your face is clearly visible and within the frame.")
+        if distance == 1.2:
+            raise HTTPException(status_code=400, detail="Biometric data mismatch (format change). Please re-enroll your face in the Profile screen.")
+        if distance == 1.3:
+            raise HTTPException(status_code=400, detail="Poor image quality. Please try again in better lighting.")
 
         if not is_match:
             background_tasks.add_task(
@@ -948,6 +994,35 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         # 4. Log Attendance (Consolidated)
         attendance_type = req.intended_type or "check-in" # Default or provided
         
+        is_late = False
+        late_mins = 0
+        
+        if attendance_type == "check-in":
+            # Use org_settings which was fetched at line 833
+            settings = org_settings or SystemSettings().dict()
+            
+            if role == EmployeeType.FIELD:
+                start_time_str = settings.get("field_office_start_time", "10:00")
+                threshold_mins = settings.get("field_late_threshold_mins", 30)
+            else:
+                start_time_str = settings.get("office_start_time", "09:00")
+                threshold_mins = settings.get("late_threshold_mins", 15)
+            
+            try:
+                log_time_utc = datetime.now(timezone.utc)
+                current_time_local = log_time_utc + timedelta(minutes=settings.get("timezone_offset", 330))
+                
+                # Limit time for today
+                start_h, start_m = map(int, start_time_str.split(":"))
+                limit_time = current_time_local.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
+                
+                if current_time_local > limit_time:
+                    is_late = True
+                    diff = current_time_local - limit_time.replace(minute=start_m) # Calculate late from the exact start time
+                    late_mins = int(diff.total_seconds() / 60)
+            except Exception as e:
+                logger.error(f"Error calculating lateness: {e}")
+
         log = {
             "user_id": str(user["_id"]),
             "email": user["email"],
@@ -957,6 +1032,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             "attendance_type": AttendanceType.OFFICE if role == EmployeeType.DESK else AttendanceType.REMOTE_FIELD,
             "location": {"lat": req.lat, "long": req.long},
             "check_in_method": check_in_method,
+            "is_late": is_late,
+            "late_mins": max(0, late_mins),
             "wifi_confidence": wifi_pct if role == EmployeeType.DESK else 0,
             "confidence_score": float(distance),
             "status": "SUCCESS",

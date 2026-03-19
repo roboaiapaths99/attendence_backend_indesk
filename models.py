@@ -293,6 +293,14 @@ class SystemSettings(BaseModel):
     office_start_time: str = "09:00"
     late_threshold_mins: int = 15
     required_hours: float = 8.0
+    
+    # Field specific defaults
+    field_office_start_time: str = "10:00"
+    field_late_threshold_mins: int = 30
+    field_required_hours: float = 9.0
+    field_visits_goal: int = 10
+    field_km_goal: float = 20.0
+    
     timezone_offset: int = 330
     primary_color: Optional[str] = "#6366f1"
     logo_url: Optional[str] = None
