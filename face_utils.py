@@ -84,7 +84,7 @@ def get_face_embedding(img_base64):
         return None
 
 
-def verify_face(img_base64, stored_embedding, threshold=0.40):
+def verify_face(img_base64, stored_embedding, threshold=0.50):
     """Verifies a face against a stored embedding using cosine similarity."""
     new_embedding = get_face_embedding(img_base64)
     if new_embedding is None:
@@ -114,7 +114,7 @@ def verify_face(img_base64, stored_embedding, threshold=0.40):
     
     return distance <= threshold, distance
 
-def compare_faces(embedding1, embedding2, threshold=0.40):
+def compare_faces(embedding1, embedding2, threshold=0.50):
     """Compares two embeddings and returns True if they match."""
     if embedding1 is None or embedding2 is None:
         return False
