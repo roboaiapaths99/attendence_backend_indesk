@@ -454,9 +454,8 @@ async def get_analytics(current_user: dict = Depends(get_current_employee)):
             if log_time.hour < 9 or (log_time.hour == 9 and log_time.minute <= 15):
                 on_time_count += 1
 
-    # Get organization-specific WiFi SSID
-    org_settings = await settings_collection.find_one({"organization_id": current_user.get("organization_id")}) if current_user.get("organization_id") else None
-    wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings else os.getenv("OFFICE_WIFI_SSID", "")
+    # Get WiFi SSID strictly from .env
+    wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
     return {
         "today_hours": round(today_hours, 2),
@@ -710,7 +709,7 @@ async def verify_presence(req: VerifyPresenceRequest):
         )
     office_lat = float(os.getenv("OFFICE_LAT", 0))
     office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 15))
+    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
 
     # Haversine distance (simplified for small distances)
     import math
@@ -726,22 +725,15 @@ async def verify_presence(req: VerifyPresenceRequest):
             detail=f"You are {dist_meters:.1f}m away from office. Must be within {radius:.1f}m."
         )
 
-    # 4. WiFi Validation
+    # 4. WiFi Validation (SSID check only, no signal strength gate)
     target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
     target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-    
-    # Calculate signal percentage for consistency
-    wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
-    REQUIRED_WIFI_PCT = 50
 
     if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
         raise HTTPException(status_code=403, detail="Must be connected to Office WiFi (Bad BSSID)")
 
     if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Must be connected to Office WiFi: {target_ssid}")
-
-    if wifi_pct < REQUIRED_WIFI_PCT:
-        raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Need >= {REQUIRED_WIFI_PCT}% for verification.")
 
     # 5. Determine check-in or check-out
     last_log = await attendance_logs_collection.find_one(
@@ -815,8 +807,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         # User explicitly requested to ALWAYS use coordinates from .env, ignoring the admin DB settings
         office_lat = float(os.getenv("OFFICE_LAT", 0))
         office_long = float(os.getenv("OFFICE_LONG", 0))
-        radius = org_settings.get("geofence_radius") if org_settings and org_settings.get("geofence_radius") else float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
-        office_wifi_ssid = org_settings.get("office_wifi_ssid") if org_settings and org_settings.get("office_wifi_ssid") else os.getenv("OFFICE_WIFI_SSID")
+        radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+        office_wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
         role = user.get("employee_type", EmployeeType.DESK)
         attendance_type = req.intended_type or "check-in"
