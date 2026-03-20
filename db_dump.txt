@@ -1,0 +1,186 @@
+﻿--- Organizations ---
+ID: 69955c1ee4c869fa8f30705a | Name: TechNova Solutions | Slug: technova-solutions-xqy3
+ID: 6995f2357aebe79f0c459532 | Name: Test Org | Slug: test-org-123
+ID: 6996f18f56ed74850cf2f7fb | Name: TechNova Solutions | Slug: technova-solutions-ob8o
+ID: 6996f19556ed74850cf2f7fe | Name: Alpha Corp | Slug: alpha-corp-1771499923
+ID: 6996f19a56ed74850cf2f801 | Name: Beta Inc | Slug: beta-inc-1771499928
+ID: 6996f29256ed74850cf2f808 | Name: E2E Test Org | Slug: e2e-test-org-4496
+ID: 6996f31256ed74850cf2f80c | Name: E2E Test Org | Slug: e2e-test-org-9035
+ID: 6996f33756ed74850cf2f810 | Name: E2E Test Org | Slug: e2e-test-org-5925
+ID: 6996f35356ed74850cf2f814 | Name: E2E Test Org | Slug: e2e-test-org-2693
+ID: 6996f3c756ed74850cf2f818 | Name: E2E Test Org | Slug: e2e-test-org-5186
+ID: 6996f41656ed74850cf2f81c | Name: enjwsd | Slug: enjwsd-5731
+ID: 6996f43d56ed74850cf2f81f | Name: Roboaiapaths | Slug: roboaiapaths-9359
+ID: 6996f56b56ed74850cf2f822 | Name: E2E Test Org | Slug: e2e-test-org-1329
+ID: 6996f5ad56ed74850cf2f826 | Name: E2E Org 1771500971 | Slug: e2e-org-1771500971-mkw5mk
+ID: 6996f5eaafd00cd5241e245e | Name: E2E Org 1771501032 | Slug: e2e-org-1771501032-yff3cd
+ID: 6996f61cafd00cd5241e2463 | Name: E2E Org 1771501081 | Slug: e2e-org-1771501081-ixp8sv
+ID: 6996f649afd00cd5241e2469 | Name: TechNova Solutions | Slug: technova-solutions-d49c
+ID: 6996f64fafd00cd5241e246c | Name: Alpha Corp | Slug: alpha-corp-1771501133
+ID: 6996f654afd00cd5241e246f | Name: Beta Inc | Slug: beta-inc-1771501138
+ID: 6996fbc4c53b2ad08b9af333 | Name: E2E Org 1771502530 | Slug: e2e-org-1771502530-lnc3t7
+ID: 6996fbe6c53b2ad08b9af338 | Name: Org A | Slug: org-a-1771502564
+ID: 6996fbe9c53b2ad08b9af33b | Name: Org B | Slug: org-b-1771502564
+ID: 6996fbf4c53b2ad08b9af33f | Name: TechNova Solutions | Slug: technova-solutions-5u9u
+ID: 6996fc0cc53b2ad08b9af342 | Name: E2E Test Org | Slug: e2e-test-org-7784
+ID: 6996fc8ac53b2ad08b9af346 | Name: E2E Test Org | Slug: e2e-test-org-4335
+ID: 6996fccac53b2ad08b9af34a | Name: E2E Org 1771502792 | Slug: e2e-org-1771502792-89z1q0
+ID: 6996fce8c53b2ad08b9af34f | Name: Org A | Slug: org-a-1771502822
+ID: 6996fceac53b2ad08b9af352 | Name: Org B | Slug: org-b-1771502822
+ID: 699968959fe0ba924aacd041 | Name: Test Enterprise | Slug: test-org-e712d3
+ID: 699968f49fe0ba924aacd044 | Name: Test Enterprise | Slug: test-org-398db8
+ID: 69996fc39fe0ba924aacd047 | Name: Test Enterprise | Slug: test-org-e5d334
+ID: 699973629fe0ba924aacd04a | Name: Test Corporation | Slug: test-corp-9082
+ID: 699973809fe0ba924aacd04d | Name: Test Corporation | Slug: test-corp-07f6
+ID: 69997399644d2b639a9a62f2 | Name: Test Corporation | Slug: test-corp-7bdd
+ID: 69997525644d2b639a9a62f5 | Name: Enterprise-1ae6 | Slug: corp-1ae6
+ID: 69997594644d2b639a9a62fa | Name: Enterprise-1439 | Slug: corp-1439
+ID: 699975b2644d2b639a9a62ff | Name: Enterprise-7545 | Slug: corp-7545
+ID: 6999840aa6cc9ad33eadd4db | Name: Acme Field Force | Slug: acme-field
+ID: 69998af3cf9c352c3f09e49b | Name: Acme Field 1771670259 | Slug: acme-field-1771670259
+ID: 69998fe5dbe515f3a6230b63 | Name: Acme Field 1771671525 | Slug: acme-field-1771671525
+ID: 69999131dbe515f3a6230b66 | Name: Acme Field 1771671857 | Slug: acme-field-1771671857
+ID: 699feb95ebbd0b0c689a8f84 | Name: Test Entity | Slug: test-org-589c96
+ID: 699fec26ebbd0b0c689a8f8d | Name: Test Entity | Slug: test-org-0d7026
+ID: 699fecbbebbd0b0c689a8f96 | Name: Test Entity | Slug: test-org-a5dc25
+ID: 699fecdeebbd0b0c689a8f9f | Name: Test Entity | Slug: test-org-3c71dc
+ID: 699fed00ebbd0b0c689a8faa | Name: Test Entity | Slug: test-org-1a5b27
+ID: 699fed4bebbd0b0c689a8fb5 | Name: Test Entity | Slug: test-org-ef4f12
+ID: 69a016efa5ce3e2755b45513 | Name: v2 Test Corp | Slug: v2test-f7f6f
+ID: 69a01f87346b7fcb4ef8a380 | Name: OfficeFlow Pro | Slug: officeflow-pro
+ID: 69a030d6346b7fcb4ef8a39a | Name: Field Force V2 Enterprise | Slug: v2-enterprise
+ID: 69b3e74bd15e906dc564d586 | Name: fv | Slug: fv-1431
+ID: 69b3f1bbe6b289c4952599ea | Name: Roboaiapaths | Slug: roboaiapaths-6417
+ID: 69b43d06065560bab1e1f533 | Name: Test Organization | Slug: test_org_123
+
+--- Admins ---
+Email: admin@officeflow.ai | Role: superadmin | OrgID: test_org_123
+Email: hr@officeflow.ai | Role: hr | OrgID: None
+Email: manager@officeflow.ai | Role: manager | OrgID: None
+Email: support@officeflow.ai | Role: support | OrgID: None
+Email: admin@technova-solutions-xqy3.com | Role: owner | OrgID: 69955c1ee4c869fa8f30705a
+Email: testadmin@example.com | Role: owner | OrgID: 6995f2357aebe79f0c459532
+Email: admin@technova-solutions-ob8o.com | Role: owner | OrgID: 6996f18f56ed74850cf2f7fb
+Email: admin@alpha-corp-1771499923.com | Role: owner | OrgID: 6996f19556ed74850cf2f7fe
+Email: admin@beta-inc-1771499928.com | Role: owner | OrgID: 6996f19a56ed74850cf2f801
+Email: owner-1771500176224@test.com | Role: owner | OrgID: 6996f29256ed74850cf2f808
+Email: sub-1771500178256@test.com | Role: admin | OrgID: None
+Email: owner-1771500304612@test.com | Role: owner | OrgID: 6996f31256ed74850cf2f80c
+Email: sub-1771500307455@test.com | Role: admin | OrgID: None
+Email: owner-1771500341137@test.com | Role: owner | OrgID: 6996f33756ed74850cf2f810
+Email: sub-1771500344146@test.com | Role: admin | OrgID: None
+Email: owner-1771500369682@test.com | Role: owner | OrgID: 6996f35356ed74850cf2f814
+Email: sub-1771500371903@test.com | Role: admin | OrgID: None
+Email: owner-1771500485904@test.com | Role: owner | OrgID: 6996f3c756ed74850cf2f818
+Email: sub-1771500488335@test.com | Role: admin | OrgID: None
+Email: ewjbds@gmail.com | Role: owner | OrgID: 6996f41656ed74850cf2f81c
+Email: roboaiapaths9@gmail.com | Role: owner | OrgID: 6996f43d56ed74850cf2f81f
+Email: owner-1771500905763@test.com | Role: owner | OrgID: 6996f56b56ed74850cf2f822
+Email: sub-1771500909161@test.com | Role: admin | OrgID: None
+Email: owner-e2e-org-1771500971-mkw5mk@test.com | Role: owner | OrgID: 6996f5ad56ed74850cf2f826
+Email: owner-e2e-org-1771501032-yff3cd@test.com | Role: owner | OrgID: 6996f5eaafd00cd5241e245e
+Email: owner-e2e-org-1771501081-ixp8sv@test.com | Role: owner | OrgID: 6996f61cafd00cd5241e2463
+Email: admin@technova-solutions-d49c.com | Role: owner | OrgID: 6996f649afd00cd5241e2469
+Email: admin@alpha-corp-1771501133.com | Role: owner | OrgID: 6996f64fafd00cd5241e246c
+Email: admin@beta-inc-1771501138.com | Role: owner | OrgID: 6996f654afd00cd5241e246f
+Email: hr@gmail.com | Role: admin | OrgID: 6996f43d56ed74850cf2f81f
+Email: owner-e2e-org-1771502530-lnc3t7@test.com | Role: owner | OrgID: 6996fbc4c53b2ad08b9af333
+Email: owner-a-1771502564@test.com | Role: owner | OrgID: 6996fbe6c53b2ad08b9af338
+Email: owner-b-1771502564@test.com | Role: owner | OrgID: 6996fbe9c53b2ad08b9af33b
+Email: admin@technova-solutions-5u9u.com | Role: owner | OrgID: 6996fbf4c53b2ad08b9af33f
+Email: owner-1771502601072@test.com | Role: owner | OrgID: 6996fc0cc53b2ad08b9af342
+Email: sub-1771502604758@test.com | Role: admin | OrgID: None
+Email: owner-1771502727808@test.com | Role: owner | OrgID: 6996fc8ac53b2ad08b9af346
+Email: sub-1771502732550@test.com | Role: admin | OrgID: None
+Email: owner-e2e-org-1771502792-89z1q0@test.com | Role: owner | OrgID: 6996fccac53b2ad08b9af34a
+Email: owner-a-1771502822@test.com | Role: owner | OrgID: 6996fce8c53b2ad08b9af34f
+Email: owner-b-1771502822@test.com | Role: owner | OrgID: 6996fceac53b2ad08b9af352
+Email: admin@test-org-e712d3.com | Role: owner | OrgID: 699968959fe0ba924aacd041
+Email: admin@test-org-398db8.com | Role: owner | OrgID: 699968f49fe0ba924aacd044
+Email: admin@test-org-e5d334.com | Role: owner | OrgID: 69996fc39fe0ba924aacd047
+Email: admin@test-corp-9082.com | Role: owner | OrgID: 699973629fe0ba924aacd04a
+Email: admin@test-corp-07f6.com | Role: owner | OrgID: 699973809fe0ba924aacd04d
+Email: admin@test-corp-7bdd.com | Role: owner | OrgID: 69997399644d2b639a9a62f2
+Email: admin@corp-1ae6.com | Role: owner | OrgID: 69997525644d2b639a9a62f5
+Email: admin@corp-1439.com | Role: owner | OrgID: 69997594644d2b639a9a62fa
+Email: admin@corp-7545.com | Role: owner | OrgID: 699975b2644d2b639a9a62ff
+Email: admin@acme.com | Role: owner | OrgID: 6999840aa6cc9ad33eadd4db
+Email: admin_1771670259@acme.com | Role: owner | OrgID: 69998af3cf9c352c3f09e49b
+Email: admin_1771671525@acme.com | Role: owner | OrgID: 69998fe5dbe515f3a6230b63
+Email: admin_1771671857@acme.com | Role: owner | OrgID: 69999131dbe515f3a6230b66
+Email: admin@test-org-589c96.com | Role: owner | OrgID: 699feb95ebbd0b0c689a8f84
+Email: admin@test-org-0d7026.com | Role: owner | OrgID: 699fec26ebbd0b0c689a8f8d
+Email: admin@test-org-a5dc25.com | Role: owner | OrgID: 699fecbbebbd0b0c689a8f96
+Email: admin@test-org-3c71dc.com | Role: owner | OrgID: 699fecdeebbd0b0c689a8f9f
+Email: admin@test-org-1a5b27.com | Role: owner | OrgID: 699fed00ebbd0b0c689a8faa
+Email: admin@test-org-ef4f12.com | Role: owner | OrgID: 699fed4bebbd0b0c689a8fb5
+Email: admin@v2test-f7f6f.com | Role: owner | OrgID: 69a016efa5ce3e2755b45513
+Email: admin@pro.com | Role: admin | OrgID: 69a01f87346b7fcb4ef8a380
+Email: test_admin@example.com | Role: admin | OrgID: 6995f2357aebe79f0c459532
+Email: bhaskarjoshi900@gmail.com | Role: owner | OrgID: 69b3e74bd15e906dc564d586
+Email: roboaiapaths99@gmail.com | Role: owner | OrgID: 69b3f1bbe6b289c4952599ea
+Email: roboaiapath99@gmail.com | Role: manager | OrgID: 69b3f1bbe6b289c4952599ea
+
+--- Employees ---
+Email: sim@test.com | OrgID: test_org_123 | DeviceID: None
+Email: Test@gmail.com | OrgID: None | DeviceID: None
+Email: smart.tester@example.com | OrgID: None | DeviceID: None
+Email: bhaskarjoshi918@gmail.com | OrgID: None | DeviceID: None
+Email: bhaskarjoshi900@gmail.combb | OrgID: None | DeviceID: None
+Email: prod_test_144653@office.flow | OrgID: None | DeviceID: None
+Email: prod_test_144931@office.flow | OrgID: None | DeviceID: None
+Email: sas@gmail.com | OrgID: None | DeviceID: None
+Email: kansalpeeyush2@gmail.com | OrgID: None | DeviceID: None
+Email: staff@alpha-corp-1771499923.com | OrgID: 6996f19556ed74850cf2f7fe | DeviceID: None
+
+--- Settings ---
+ID: None | OrgID: 69955c1ee4c869fa8f30705a
+ID: None | OrgID: 6995f2357aebe79f0c459532
+ID: None | OrgID: 6996f18f56ed74850cf2f7fb
+ID: None | OrgID: 6996f19556ed74850cf2f7fe
+ID: None | OrgID: 6996f19a56ed74850cf2f801
+ID: None | OrgID: 6996f29256ed74850cf2f808
+ID: None | OrgID: 6996f31256ed74850cf2f80c
+ID: None | OrgID: 6996f33756ed74850cf2f810
+ID: None | OrgID: 6996f35356ed74850cf2f814
+ID: None | OrgID: 6996f3c756ed74850cf2f818
+ID: None | OrgID: 6996f41656ed74850cf2f81c
+ID: None | OrgID: 6996f43d56ed74850cf2f81f
+ID: None | OrgID: 6996f56b56ed74850cf2f822
+ID: None | OrgID: 6996f5ad56ed74850cf2f826
+ID: None | OrgID: 6996f5eaafd00cd5241e245e
+ID: None | OrgID: 6996f61cafd00cd5241e2463
+ID: None | OrgID: 6996f649afd00cd5241e2469
+ID: None | OrgID: 6996f64fafd00cd5241e246c
+ID: None | OrgID: 6996f654afd00cd5241e246f
+ID: None | OrgID: 6996fbc4c53b2ad08b9af333
+ID: None | OrgID: 6996fbe6c53b2ad08b9af338
+ID: None | OrgID: 6996fbe9c53b2ad08b9af33b
+ID: None | OrgID: 6996fbf4c53b2ad08b9af33f
+ID: None | OrgID: 6996fc0cc53b2ad08b9af342
+ID: None | OrgID: 6996fc8ac53b2ad08b9af346
+ID: None | OrgID: 6996fccac53b2ad08b9af34a
+ID: None | OrgID: 6996fce8c53b2ad08b9af34f
+ID: None | OrgID: 6996fceac53b2ad08b9af352
+ID: None | OrgID: 699968959fe0ba924aacd041
+ID: None | OrgID: 699968f49fe0ba924aacd044
+ID: None | OrgID: 69996fc39fe0ba924aacd047
+ID: None | OrgID: 699973629fe0ba924aacd04a
+ID: None | OrgID: 699973809fe0ba924aacd04d
+ID: None | OrgID: 69997399644d2b639a9a62f2
+ID: None | OrgID: 69997525644d2b639a9a62f5
+ID: None | OrgID: 69997594644d2b639a9a62fa
+ID: None | OrgID: 699975b2644d2b639a9a62ff
+ID: None | OrgID: 6999840aa6cc9ad33eadd4db
+ID: None | OrgID: 69998af3cf9c352c3f09e49b
+ID: None | OrgID: 69998fe5dbe515f3a6230b63
+ID: None | OrgID: 69999131dbe515f3a6230b66
+ID: None | OrgID: 699feb95ebbd0b0c689a8f84
+ID: None | OrgID: 699fec26ebbd0b0c689a8f8d
+ID: None | OrgID: 699fecbbebbd0b0c689a8f96
+ID: None | OrgID: 699fecdeebbd0b0c689a8f9f
+ID: None | OrgID: 699fed00ebbd0b0c689a8faa
+ID: None | OrgID: 699fed4bebbd0b0c689a8fb5
+ID: None | OrgID: 69a016efa5ce3e2755b45513
+ID: None | OrgID: 69b3e74bd15e906dc564d586
+ID: None | OrgID: 69b3f1bbe6b289c4952599ea

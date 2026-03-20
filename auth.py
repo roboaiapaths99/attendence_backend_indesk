@@ -57,7 +57,7 @@ async def get_current_admin(token: str = Depends(admin_oauth2_scheme)):
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
+        email: str = payload.get("sub").lower().strip()
         if email is None:
             raise credentials_exception
     except JWTError:
@@ -96,7 +96,7 @@ async def get_current_employee(token: str = Depends(employee_oauth2_scheme)):
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
+        email: str = payload.get("sub").lower().strip()
         if email is None:
             raise credentials_exception
     except JWTError:

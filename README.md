@@ -32,4 +32,27 @@ FastAPI backend for OfficeFlow attendance app with face recognition, geofencing,
 - FastAPI
 - MongoDB Atlas
 - DeepFace (face recognition)
-- OpenCV
+## Deployment
+
+To deploy the backend on a VPS, use the following commands or run the `deploy_vps.sh` script:
+
+```bash
+cd /var/www/backend
+git pull origin main
+docker stop logday-api && docker rm logday-api
+docker build -t logday-backend .
+docker run -d \
+  --name logday-api \
+  --restart always \
+  -p 8001:8001 \
+  --env-file .env \
+  -v $(pwd)/uploads:/app/uploads \
+  -v $(pwd)/logs:/app/logs \
+  logday-backend
+```
+
+Alternatively, run:
+```bash
+bash deploy_vps.sh
+```
+

@@ -310,10 +310,11 @@ async def health_check():
 async def register(req: RegisterRequest):
     """Register a new employee with face image and enterprise metadata."""
     try:
-        logger.info(f"Received registration request for: {req.email}")
+        clean_email = req.email.strip().lower()
+        logger.info(f"Received registration request for: {clean_email}")
 
         # Check if employee already exists
-        existing = await employees_collection.find_one({"email": req.email})
+        existing = await employees_collection.find_one({"email": clean_email})
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -329,11 +330,11 @@ async def register(req: RegisterRequest):
         hashed_password = get_password_hash(req.password)
         employee_dict = {
             "full_name": req.full_name,
-            "email": req.email,
+            "email": clean_email,
             "employee_id": req.employee_id,
             "designation": req.designation,
             "department": req.department,
-            "organization_id": req.organization_id,
+            "organization_id": req.organization_id or "system_org", # Default to system_org
             "employee_type": req.employee_type,
             "hashed_password": hashed_password,
             "face_embedding": embedding,
@@ -628,13 +629,15 @@ async def login(req: LoginRequest, request: Request):
     if req.organization_id:
         emp_org = user.get("organization_id")
         logger.info(f"Checking Org Match: App sent '{req.organization_id}', DB has '{emp_org}'")
-        if emp_org is None:
-            logger.warning(f"Login failed: User {clean_email} has no org linked in DB.")
-            raise HTTPException(
-                status_code=403,
-                detail="This account is not linked to an organization. Please contact your administrator."
+        if emp_org is None or emp_org == "" or emp_org == "system_org":
+            # Auto-link employee to the requested organization on first login
+            logger.info(f"Auto-linking user {clean_email} to organization {req.organization_id}")
+            await employees_collection.update_one(
+                {"email": clean_email},
+                {"$set": {"organization_id": req.organization_id}}
             )
-        if emp_org != req.organization_id:
+            user["organization_id"] = req.organization_id
+        elif emp_org != req.organization_id:
             logger.warning(f"Login failed: Org mismatch. App: {req.organization_id}, DB: {emp_org}")
             raise HTTPException(
                 status_code=403,
@@ -654,7 +657,7 @@ async def login(req: LoginRequest, request: Request):
         await employees_collection.update_one({"email": clean_email}, {"$set": {"device_id": req.device_id}})
     
     logger.info("Login process complete. Generating token.")
-    access_token = create_access_token(data={"sub": req.email})
+    access_token = create_access_token(data={"sub": clean_email})
     
     # Check if this user is a manager (has subordinates)
     subordinates_count = await employees_collection.count_documents({"manager_id": clean_email})
@@ -826,7 +829,8 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         office_wifi_ssid = None
         
         # 1. Identity & Role Fetch
-        user = await employees_collection.find_one({"email": req.email})
+        clean_email = req.email.strip().lower()
+        user = await employees_collection.find_one({"email": clean_email})
         if not user:
              # Try 1:N face search if email is unknown/auto
             new_embedding = get_face_embedding(req.image)
@@ -849,7 +853,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         # User explicitly requested to ALWAYS use coordinates from .env, ignoring the admin DB settings
         office_lat = float(os.getenv("OFFICE_LAT", 0))
         office_long = float(os.getenv("OFFICE_LONG", 0))
-        radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+        radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 150)) # Relaxed from 40m to 150m for stability
         office_wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
         role = user.get("employee_type", EmployeeType.DESK)
@@ -865,10 +869,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
 
         if attendance_type == "check-in":
             if last_log and last_log.get("type") == "check-in":
-                raise HTTPException(status_code=400, detail="You are already checked in for today.")
+                raise HTTPException(status_code=400, detail="You are already checked in. Please check out first before checking in again.")
         elif attendance_type == "check-out":
             if not last_log or last_log.get("type") == "check-out":
-                raise HTTPException(status_code=400, detail="Cannot check out without an active check-in.")
+                raise HTTPException(status_code=400, detail="You haven't checked in yet. Please check in first.")
 
         # 2. Universal Security: Mock Location & Face Match
         if req.mock_detected:
@@ -1379,12 +1383,13 @@ async def admin_export_logs_excel(current_admin: Admin = Depends(get_current_adm
 @app.post("/admin/login")
 async def admin_login(req: AdminLoginRequest):
     """Database-driven admin authentication."""
+    clean_email = req.email.strip().lower()
     # 1. Check database for admin
-    admin = await admins_collection.find_one({"email": req.email})
+    admin = await admins_collection.find_one({"email": clean_email})
     
     # 2. Verify password
     if admin and verify_password(req.password, admin.get("hashed_password")):
-        token_data = {"sub": req.email, "role": admin.get("role", "admin")}
+        token_data = {"sub": clean_email, "role": admin.get("role", "admin")}
         # Add Organization Context if present
         if admin.get("organization_id"):
             token_data["org_id"] = admin.get("organization_id")
@@ -1512,14 +1517,15 @@ async def create_sub_admin(req: SubAdminCreate, current_admin: Admin = Depends(g
         logger.warning(f"Access Denied: Admin {current_admin.email} with role {current_admin.role} tried to manage sub-admins.")
         raise HTTPException(status_code=403, detail="Only organization owners/admins can add new admins.")
     
+    clean_email = req.email.strip().lower()
     # Check if admin already exists
-    existing = await admins_collection.find_one({"email": req.email})
+    existing = await admins_collection.find_one({"email": clean_email})
     if existing:
         raise HTTPException(status_code=400, detail="Admin email already registered.")
     
     hashed_password = get_password_hash(req.password)
     new_admin = {
-        "email": req.email,
+        "email": clean_email,
         "hashed_password": hashed_password,
         "full_name": req.full_name,
         "role": req.role if hasattr(req, 'role') and req.role else "admin",
@@ -1629,7 +1635,7 @@ async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: 
 @app.post("/admin/employees/bulk-update-type")
 async def admin_bulk_update_employee_type(req: dict, current_admin: Admin = Depends(get_current_admin)):
     """Bulk update employee work type (desk/field/office)"""
-    emails = req.get("employee_emails", [])
+    emails = [e.lower().strip() for e in req.get("employee_emails", [])]
     new_type = req.get("employee_type")
     
     if not emails or not new_type:
@@ -1691,8 +1697,9 @@ async def admin_all_logs(limit: int = 100, current_admin: Admin = Depends(get_cu
 @app.post("/admin/employees")
 async def admin_create_employee(req: RegisterRequest, current_admin: Admin = Depends(get_current_admin)):
     """Manually register a new employee (Admin)."""
+    clean_email = req.email.strip().lower()
     # Check if employee already exists (globally unique email)
-    existing = await employees_collection.find_one({"email": req.email})
+    existing = await employees_collection.find_one({"email": clean_email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
@@ -1704,7 +1711,7 @@ async def admin_create_employee(req: RegisterRequest, current_admin: Admin = Dep
     hashed_password = get_password_hash(req.password)
     employee_dict = {
         "full_name": req.full_name,
-        "email": req.email,
+        "email": clean_email,
         "employee_id": req.employee_id,
         "designation": req.designation,
         "department": req.department,
@@ -1814,8 +1821,8 @@ async def bulk_assign_manager(req: dict, current_admin: Admin = Depends(get_curr
     if current_admin.role not in ["owner", "hr", "superadmin"]:
         raise HTTPException(status_code=403, detail="Insufficient permissions to assign managers.")
     
-    employee_emails = req.get("employee_emails", [])
-    manager_email = req.get("manager_email")
+    employee_emails = [e.lower().strip() for e in req.get("employee_emails", [])]
+    manager_email = req.get("manager_email", "").lower().strip()
     
     if not manager_email:
         raise HTTPException(status_code=400, detail="Manager email is required")
@@ -1834,15 +1841,27 @@ async def bulk_assign_manager(req: dict, current_admin: Admin = Depends(get_curr
 async def get_settings(current_admin: Admin = Depends(get_current_admin)):
     """Retrieve organization-specific configuration."""
     org_id = current_admin.organization_id
-    if not org_id:
-         # Fallback to global config for superadmins or unlinked orgs
+    
+    # Use specific query based on organization linkage
+    # For superadmins or unlinked admins, fallback to global 'config'
+    if not org_id or org_id == "system_org":
          settings = await settings_collection.find_one({"id": "config"})
-         return settings or SystemSettings().dict()
+    else:
+         settings = await settings_collection.find_one({"organization_id": org_id})
 
-    settings = await settings_collection.find_one({"organization_id": org_id})
     if not settings:
         return SystemSettings().dict()
-    return settings
+    
+    # Handle ObjectId serialization and ensure defaults from SystemSettings are included
+    if "_id" in settings:
+        settings["_id"] = str(settings["_id"])
+    
+    # Merge with default settings to ensure any missing fields are present
+    stored_data = settings.copy()
+    default_data = SystemSettings().dict()
+    default_data.update(stored_data)
+    
+    return default_data
 
 
 @app.put("/admin/settings")
@@ -2135,6 +2154,13 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
     """Log a site check-in at a specific client/location with geofence validation."""
     try:
         import math
+        # Parse coordinates first (needed by mock detection and geofence)
+        agent_lat = float(req["lat"])
+        agent_lng = float(req["lng"])
+        geofence_validated = False
+        geofence_distance = None
+        target_stop = None
+
         # Mock Location Prevention
         if req.get("mock_detected"):
              logger.warning(f"Field Security Alert: Mock GPS detected during check-in for {employee['email']}")
@@ -2148,16 +2174,11 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
              )
              raise HTTPException(status_code=403, detail="Security Violation: Mock Location detected. Check-in rejected.")
 
-        agent_lat = float(req["lat"])
-        agent_lng = float(req["lng"])
-        geofence_validated = False
-        geofence_distance = None
-
-        # --- GEOFENCE VALIDATION (100m radius) ---
+        # --- GEOFENCE VALIDATION (200m radius) ---
         stop_id = req.get("stop_id")
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         plan = await visit_plans_collection.find_one({
-            "employee_id": employee["email"],
+            "employee_id": employee["email"].lower().strip(),
             "date": today_str,
             "status": PlanStatus.APPROVED
         })
@@ -2180,7 +2201,7 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
                 c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
                 geofence_distance = round(6371000 * c, 1)  # meters
 
-                GEOFENCE_RADIUS = 100  # meters
+                GEOFENCE_RADIUS = 200  # Relaxed from 100m to 200m
                 if geofence_distance > GEOFENCE_RADIUS:
                     await trigger_alert(
                         "Compliance", 
@@ -2210,9 +2231,9 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
             # Optional face verification against stored descriptors
             try:
                 user = await employees_collection.find_one({"email": employee["email"]})
-                if user and user.get("face_descriptor"):
-                    from auth import verify_face
-                    match = verify_face(req["selfie_base64"], user["face_descriptor"])
+                if user and user.get("face_embedding"):
+                    from face_utils import verify_face as _v_face
+                    match, distance = _v_face(req["selfie_base64"], user["face_embedding"])
                     face_verified = match
                     if not match:
                         await trigger_alert(
@@ -2234,7 +2255,7 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
             "check_in_lat": agent_lat,
             "check_in_lng": agent_lng,
             "check_in_accuracy": req.get("accuracy", 0),
-            "place_name": target_stop.get("place_name") if (target_stop and target_stop.get("place_name")) else req.get("place_name", "Unknown"),
+            "place_name": (target_stop.get("place_name") if target_stop else None) or req.get("place_name", "Unknown"),
             "visit_plan_stop_id": stop_id,
             "geofence_validated": geofence_validated,
             "geofence_distance_meters": geofence_distance,
@@ -2266,17 +2287,20 @@ async def visit_check_out(req: dict, background_tasks: BackgroundTasks, employee
         if req.get("selfie_base64"):
             try:
                 # Get employee's enrolled descriptor
-                target_descriptor = employee.get("face_descriptor")
+                target_descriptor = employee.get("face_embedding")
                 if target_descriptor:
                     # Verify provided selfie
                     is_match, score = verify_face(req["selfie_base64"], target_descriptor)
                     face_verified = is_match
                     if not is_match:
                         # Alert admin but don't block check-out (could be lighting etc)
-                        await send_security_alert_notification(
-                            "VISIT_FACE_MISMATCH", 
+                        await trigger_alert(
+                            "Identity", 
                             employee["email"], 
-                            f"Face mismatch during check-out for visit {req['visit_id']}. Confidence: {score}"
+                            employee["organization_id"],
+                            f"Face mismatch during check-out for visit {req['visit_id']}.",
+                            "high",
+                            {"id": req['visit_id'], "score": score}
                         )
                 else:
                     logger.warning(f"Employee {employee['email']} has no enrolled face for verification.")
@@ -2638,12 +2662,32 @@ async def get_field_day_summary(employee_id: str, date: Optional[str] = None, cu
         "status": "completed"
     })
     
-    # 3. Current Attendance Status
+    # 2. Total KM (Sum of suggested KM or accepted claims for today)
+    # For now, we'll try to get it from location pings if recorded
+    total_km = 0.0
+    pings = await location_pings_collection.find({
+        "employee_id": employee_id,
+        "recorded_at": {
+            "$gte": datetime.strptime(query_date, "%Y-%m-%d"),
+            "$lt": datetime.strptime(query_date, "%Y-%m-%d") + timedelta(days=1)
+        }
+    }).sort("recorded_at", 1).to_list(length=1000)
+    
+    if len(pings) > 1:
+        for i in range(len(pings)-1):
+            p1 = pings[i]
+            p2 = pings[i+1]
+            if "lat" in p1 and "lng" in p1 and "lat" in p2 and "lng" in p2:
+                d = calculate_haversine(p1["lat"], p1["lng"], p2["lat"], p2["lng"])
+                total_km += d
+        total_km = total_km / 1000.0 # Convert to KM
+    
+    # 3. Current Attendance Status (ABSOLUTE LATEST)
     last_log = await attendance_logs_collection.find_one(
-        {"email": employee_id, "timestamp": {"$gte": datetime.strptime(query_date, "%Y-%m-%d"), "$lt": datetime.strptime(query_date, "%Y-%m-%d") + timedelta(days=1)}},
+        {"email": employee_id},
         sort=[("timestamp", -1)]
     )
-    current_status = last_log.get("type", "checkout") if last_log else "checkout"
+    current_status = last_log.get("type", "check-out") if last_log else "check-out"
             
     return {
         "date": query_date,
@@ -2661,11 +2705,15 @@ async def get_field_day_summary(employee_id: str, date: Optional[str] = None, cu
 
 @app.put("/admin/employees/{email}/territory")
 async def update_territory(email: str, req: dict, admin=Depends(get_current_admin)):
-    """Update geofence/territory for a specific agent. Supports both radius and polygon."""
-    # Build org-scoped query
-    query = {"email": email}
-    if admin.organization_id:
-        query["organization_id"] = admin.organization_id
+    """Update employee territory settings (radius or polygon)."""
+    clean_email = email.lower().strip()
+    
+    # Check if employee exists within admin scope
+    base_filter = get_employee_filter(admin)
+    query = {"email": clean_email, **base_filter}
+    user = await employees_collection.find_one(query)
+    if not user:
+        raise HTTPException(status_code=404, detail="Employee not found or access denied")
 
     update_fields = {
         "territory_type": req.get("territory_type", "radius"),
@@ -3204,12 +3252,30 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
                         status = "Idle"
                         idle_count += 1
                 
-                # 4. KM today calculation
+                # 4. KM today calculation (Accurate Haversine Sum)
                 start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                pings_today = await location_pings_collection.count_documents({
+                pings_cursor = location_pings_collection.find({
                     "employee_id": emp["email"],
                     "recorded_at": {"$gte": start_of_day}
-                })
+                }).sort("recorded_at", 1)
+                pings_today_list = await pings_cursor.to_list(length=1000)
+                
+                total_km_calc = 0.0
+                if len(pings_today_list) > 1:
+                    for i in range(len(pings_today_list) - 1):
+                        p1 = pings_today_list[i]
+                        p2 = pings_today_list[i+1]
+                        if p1.get("lat") and p1.get("lng") and p2.get("lat") and p2.get("lng"):
+                            lat1, lon1 = math.radians(p1["lat"]), math.radians(p1["lng"])
+                            lat2, lon2 = math.radians(p2["lat"]), math.radians(p2["lng"])
+                            dlat = lat2 - lat1
+                            dlon = lon2 - lon1
+                            a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+                            c = 2 * math.asin(math.sqrt(a))
+                            total_km_calc += 6371 * c
+                
+                pings_today = len(pings_today_list)
+                km_today_final = float(round(total_km_calc, 2))
                 
                 # 5. Format response object
                 lp = ping.get("recorded_at") if ping else None
@@ -3225,7 +3291,7 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
                     "status": str(status),
                     "current_visit": str(current_visit) if current_visit else None,
                     "last_ping": str(lp) if lp else None,
-                    "km_today": float(round(pings_today * 0.1, 1)),
+                    "km_today": km_today_final,
                     "territory": emp.get("territory")
                 })
             except Exception as e:
@@ -4335,9 +4401,12 @@ async def get_employee_monthly_summary(
 @app.post("/admin/employees/bulk-update")
 async def admin_bulk_update_employees(req: dict, admin=Depends(get_current_admin)):
     """Bulk update fields (like manager assignment or territory) for multiple employees."""
-    employee_emails = req.get("employee_emails", [])
+    employee_emails = [e.lower().strip() for e in req.get("employee_emails", [])]
     updates = req.get("updates", {})
     
+    if "manager_id" in updates:
+        updates["manager_id"] = updates["manager_id"].lower().strip()
+
     if not employee_emails or not updates:
         raise HTTPException(status_code=400, detail="Missing emails or updates")
         
