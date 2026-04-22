@@ -9,23 +9,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender-dev \
     libgomp1 \
     curl \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── Non-root user ────────────────────────────────────────────────────────────
-RUN useradd -m -u 1000 appuser
 WORKDIR /app
-RUN mkdir -p uploads logs && chown -R appuser:appuser /app
-USER appuser
-ENV PATH="/home/appuser/.local/bin:$PATH"
 
 # ─── Python dependencies ─────────────────────────────────────────────────────
-COPY --chown=appuser requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# We install dependencies as root to avoid permission overhead and ensure 
+# systems paths are correctly populated. We switch to appuser later.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --default-timeout=1000 -r requirements.txt
+
+# ─── Non-root user setup ──────────────────────────────────────────────────────
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p uploads logs && \
+    chown -R appuser:appuser /app
 
 # ─── Application code ────────────────────────────────────────────────────────
 COPY --chown=appuser . .
 
+USER appuser
+ENV PATH="/home/appuser/.local/bin:$PATH"
 # ─── Expose & Config ─────────────────────────────────────────────────────────
 EXPOSE 8001
 
