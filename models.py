@@ -248,7 +248,7 @@ class Admin(BaseModel):
     email: str
     full_name: str
     role: AdminRole = AdminRole.HR
-    organization_id: str
+    organization_id: Optional[str] = None
     allowed_features: List[str] = ["dashboard"]
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

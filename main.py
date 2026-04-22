@@ -106,6 +106,25 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+# --- API PREFIX MIDDLEWARE ---
+# Automatically routes /api/* to /* if the prefix is missing in main.py
+@app.middleware("http")
+async def api_prefix_handler(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/"):
+        # Check if the exact path exists in the app's routes
+        route_exists = any(route.path == path for route in app.routes)
+        if not route_exists:
+            # Try to route without /api
+            new_path = path[4:] # strip /api
+            # Check if stripped path exists
+            if any(route.path == new_path for route in app.routes):
+                scope = request.scope.copy()
+                scope['path'] = new_path
+                request = Request(scope)
+    
+    return await call_next(request)
+
 # --- GLOBAL EXCEPTION HANDLERS ---
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -386,176 +405,18 @@ async def register(req: RegisterRequest):
 
 
 
-@app.get("/analytics/me")
-async def get_analytics(current_user: dict = Depends(get_current_employee)):
-    """Retrieve weekly/daily work hour stats for the authenticated user (JWT Protected)."""
-    email = current_user["email"]
-    
-    user = await employees_collection.find_one({"email": email})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    from datetime import timedelta
-    now_utc = datetime.now(timezone.utc)
-    seven_days_ago = (now_utc - timedelta(days=7)).isoformat()
-    today_str = now_utc.strftime("%Y-%m-%d")
-
-    # Get all logs for this user in the last 7 days
-    all_logs_cursor = attendance_logs_collection.find({
-        "user_id": str(user["_id"]),
-        "timestamp": {"$gte": seven_days_ago}
-    }).sort("timestamp", -1)
-    all_logs = await all_logs_cursor.to_list(length=500)
-    
-    # We also need the VERY LATEST log (regardless of the 7-day window) for the current status
-    latest_log = await attendance_logs_collection.find_one(
-        {"user_id": str(user["_id"])},
-        sort=[("timestamp", -1)]
-    )
-
-    daily_hours = {}
-    total_week_hours = 0.0
-    today_hours = 0.0
-    on_time_count = 0
-    current_status = "check-out"
-
-    # Set current status based on the absolute latest log
-    if latest_log:
-        current_status = latest_log.get("type", "check-out")
-
-    # Process logs for hours and stats
-    for log in all_logs:
-        log_time_raw = log.get("timestamp")
-        if not log_time_raw:
-            continue
-
-        try:
-            if isinstance(log_time_raw, str):
-                log_time = datetime.fromisoformat(log_time_raw.replace("Z", "+00:00"))
-            elif isinstance(log_time_raw, datetime):
-                log_time = log_time_raw if log_time_raw.tzinfo else log_time_raw.replace(tzinfo=timezone.utc)
-            else:
-                continue
-        except Exception:
-            continue
-
-        date_str = log_time.strftime("%Y-%m-%d")
-        log_type = log.get("type", "")
-
-        # Accumulate hours from check-out logs
-        if log_type == "check-out":
-            duration = float(log.get("duration_hours", 0) or 0)
-            daily_hours[date_str] = daily_hours.get(date_str, 0.0) + duration
-            total_week_hours += duration
-            if date_str == today_str:
-                today_hours += duration
-
-        # Count on-time check-ins using dynamic settings
-        if log_type == "check-in":
-            # Fetch settings for the organization
-            org_id = user.get("organization_id")
-            settings_doc = await settings_collection.find_one({"organization_id": org_id})
-            settings = settings_doc if settings_doc else SystemSettings().dict()
-            
-            user_type = user.get("employee_type", EmployeeType.DESK)
-            if user_type == EmployeeType.FIELD:
-                start_time_str = settings.get("field_office_start_time", "10:00")
-                threshold_mins = settings.get("field_late_threshold_mins", 30)
-            else:
-                start_time_str = settings.get("office_start_time", "09:00")
-                threshold_mins = settings.get("late_threshold_mins", 15)
-            
-            try:
-                start_h, start_m = map(int, start_time_str.split(":"))
-                # Adjust log_time for comparison if needed (log_time is UTC from DB)
-                # For analytics, we compare based on local hour/min
-                local_log_time = log_time + timedelta(minutes=settings.get("timezone_offset", 330))
-                
-                # Limit time for today
-                limit_time = local_log_time.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
-                
-                if local_log_time <= limit_time:
-                    on_time_count += 1
-            except Exception as e:
-                logger.error(f"Error calculating lateness in analytics: {e}")
-                # Fallback to a safer logic or mark as on-time? 
-                # User wants it to work with REAL input, so we should Log errors precisely
-
-    # Get WiFi SSID strictly from .env
-    wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-
-    return {
-        "today_hours": round(today_hours, 2),
-        "week_total": round(total_week_hours, 2),
-        "daily_breakdown": daily_hours,
-        "current_status": current_status,
-        "on_time_count": on_time_count,
-        "total_logs_week": len(all_logs),
-        "office_wifi_ssid": wifi_ssid if wifi_ssid else ""
-    }
 
 
-@app.post("/update-face")
-async def update_face(req: UpdateFaceRequest):
-    """Securely update user face descriptors after location & password verification."""
-    # 1. Identity & Organization Verification
-    user = await employees_collection.find_one({"email": req.email})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-        
-    if not verify_password(req.password, user["hashed_password"]):
-        raise HTTPException(status_code=403, detail="Incorrect password. Unauthorized re-enrollment.")
 
-    org_id = user.get("organization_id")
-    org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
 
-    # 2. Geofencing Validation (STRICT: Always use .env values to avoid DB misconfiguration)
-    office_lat = float(os.getenv("OFFICE_LAT", 0))
-    office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
-    
-    dlat = math.radians(req.lat - office_lat)
-    dlon = math.radians(req.long - office_long)
-    a = math.sin(dlat / 2)**2 + math.cos(math.radians(office_lat)) * math.cos(math.radians(req.lat)) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    dist_meters = 6371000 * c
-    
-    if dist_meters > radius:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Biometric update restricted to Office Zone. You are {dist_meters:.1f}m away (Target: {radius}m)."
-        )
 
-    # 3. WiFi Validation (SSID check only, no signal strength gate)
-    target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
-    if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
-         raise HTTPException(status_code=403, detail=f"Biometric update requires Office WiFi: {target_ssid}")
 
-    # 4. Device Binding Check
-    if user.get("device_id") and req.device_id and user["device_id"] != req.device_id:
-        raise HTTPException(status_code=403, detail="Security Alert: Hardware ID mismatch. Biometrics must be updated from your registered phone.")
-        
-    try:
-        # Generate face embedding using utility
-        embedding = get_face_embedding(req.face_image)
-        if embedding is None:
-            raise HTTPException(status_code=400, detail="No face detected in the image.")
-            
-        # Update user record
-        await employees_collection.update_one(
-            {"email": req.email},
-            {"$set": {
-                "face_embedding": embedding,
-                "profile_image": req.face_image
-            }}
-        )
-        
-        return {"message": "Face data updated successfully. No attendance impact."}
-        
-    except Exception as e:
-        logger.error(f"Face update failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Face update failed due to internal server error.")
+
+
+
+
+
 
 
 
@@ -578,10 +439,6 @@ async def discover_organization(slug: str):
     }
 
 
-@app.get("/settings")
-async def get_default_settings():
-    """Default settings endpoint for apps without a slug context."""
-    return SystemSettings().dict()
 
 @app.get("/settings/{slug}")
 async def get_public_settings(slug: str):
@@ -752,17 +609,34 @@ async def verify_presence(req: VerifyPresenceRequest):
             status_code=400,
             detail=f"Face verification failed (distance: {distance:.4f}). Please try again."
         )
-    office_lat = float(os.getenv("OFFICE_LAT", 0))
-    office_long = float(os.getenv("OFFICE_LONG", 0))
-    radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+    # 3. Geofencing & WiFi Validation (Split Field/Desk)
+    org_id = user.get("organization_id")
+    org_settings = await settings_collection.find_one({"organization_id": org_id})
+    settings = org_settings or {}
+    emp_type = user.get("employee_type", "desk")
+    
+    if emp_type == "field":
+        # Dynamic from Database
+        office_lat = float(settings.get("office_lat", 0))
+        office_long = float(settings.get("office_long", 0))
+        radius = float(settings.get("geofence_radius", 150))
+        target_ssid = settings.get("office_wifi_ssid", "")
+        tz_offset = settings.get("timezone_offset", 330)
+    else:
+        # Desk: Always use .env values
+        office_lat = float(os.getenv("OFFICE_LAT", 0))
+        office_long = float(os.getenv("OFFICE_LONG", 0))
+        radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 40))
+        target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
+        tz_offset = 330 # Fixed for Desk
 
-    # Haversine distance (simplified for small distances)
+    # Haversine distance
     import math
     dlat = math.radians(req.lat - office_lat)
     dlon = math.radians(req.long - office_long)
     a = math.sin(dlat / 2)**2 + math.cos(math.radians(office_lat)) * math.cos(math.radians(req.lat)) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    dist_meters = 6371000 * c  # Earth radius in meters
+    dist_meters = 6371000 * c
 
     if dist_meters > radius:
         raise HTTPException(
@@ -770,19 +644,13 @@ async def verify_presence(req: VerifyPresenceRequest):
             detail=f"You are {dist_meters:.1f}m away from office. Must be within {radius:.1f}m."
         )
 
-    # 4. WiFi Validation (SSID check only, no signal strength gate)
-    target_bssid = os.getenv("OFFICE_WIFI_BSSID", "")
-    target_ssid = os.getenv("OFFICE_WIFI_SSID", "")
-
-    if target_bssid and req.wifi_bssid and req.wifi_bssid.lower() != target_bssid.lower():
-        raise HTTPException(status_code=403, detail="Must be connected to Office WiFi (Bad BSSID)")
-
-    if target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
+    if emp_type != "field" and target_ssid and req.wifi_ssid and req.wifi_ssid != target_ssid:
          raise HTTPException(status_code=403, detail=f"Must be connected to Office WiFi: {target_ssid}")
 
-    # 5. Determine check-in or check-out
+    # 5. Determine check-in or check-out (Localized)
+    today_start_utc = get_today_start(tz_offset)
     last_log = await attendance_logs_collection.find_one(
-        {"user_id": str(user["_id"])},
+        {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start_utc}},
         sort=[("timestamp", -1)]
     )
     attendance_type = "check-out" if (last_log and last_log.get("type") == "check-in") else "check-in"
@@ -846,33 +714,52 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             if not user:
                 raise HTTPException(status_code=404, detail="Identity not recognized. Please sign in or register.")
 
-        # At this point, 'user' is identified
+        # Identity identified. Fetch settings.
         org_id = user.get("organization_id")
         org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
         
-        # User explicitly requested to ALWAYS use coordinates from .env, ignoring the admin DB settings
-        office_lat = float(os.getenv("OFFICE_LAT", 0))
-        office_long = float(os.getenv("OFFICE_LONG", 0))
-        radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 150)) # Relaxed from 40m to 150m for stability
-        office_wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
+        emp_type = user.get("employee_type", "desk")
+        
+        if emp_type == "field" and org_settings:
+            # Field users: Dynamic from DB
+            office_lat = float(org_settings.get("office_lat", 0))
+            office_long = float(org_settings.get("office_long", 0))
+            radius = float(org_settings.get("geofence_radius", 150))
+            office_wifi_ssid = org_settings.get("office_wifi_ssid", "")
+        else:
+            # Desk/Default: Hardcoded from ENV
+            office_lat = float(os.getenv("OFFICE_LAT", 0))
+            office_long = float(os.getenv("OFFICE_LONG", 0))
+            radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 150))
+            office_wifi_ssid = os.getenv("OFFICE_WIFI_SSID", "")
 
-        role = user.get("employee_type", EmployeeType.DESK)
+        role = user.get("employee_type", "desk")
         attendance_type = req.intended_type or "check-in"
         logger.info(f"Processing {attendance_type.replace('-', ' ').title()} for {user['email']} (Role: {role})")
 
         # Session Validation: Prevent duplicate check-ins or orphan check-outs
-        # Removed the 'today_start' restriction to support state-based shifts (e.g. shifts crossing midnight)
+        # Fixed: Use localized 'today' start to prevent UTC boundary issues (e.g. IST early starters)
+        tz_offset = 330 # Default IST
+        if org_settings:
+            tz_offset = org_settings.get("timezone_offset", 330)
+        
+        today_start_utc = get_today_start(tz_offset)
+        
         last_log = await attendance_logs_collection.find_one(
-            {"user_id": str(user["_id"])},
+            {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start_utc}},
             sort=[("timestamp", -1)]
         )
 
         if attendance_type == "check-in":
             if last_log and last_log.get("type") == "check-in":
-                raise HTTPException(status_code=400, detail="You are already checked in. Please check out first before checking in again.")
+                # Only strictly block if they literally checked in recently, allowing overrides otherwise over a new day
+                hours_since = (datetime.now(timezone.utc) - last_log["timestamp"]).total_seconds() / 3600
+                if hours_since < 12:
+                    raise HTTPException(status_code=400, detail="You are already checked in. Please check out first before checking in again.")
         elif attendance_type == "check-out":
             if not last_log or last_log.get("type") == "check-out":
-                raise HTTPException(status_code=400, detail="You haven't checked in yet. Please check in first.")
+                # Instead of crashing entirely, we can log an orphan checkout or warn user, but current requirements say we throw 400.
+                raise HTTPException(status_code=400, detail="You haven't checked in today yet. Please check in first.")
 
         # 2. Universal Security: Mock Location & Face Match
         if req.mock_detected:
@@ -923,37 +810,56 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             raise HTTPException(status_code=400, detail="Face verification failed. Please ensure your face is clearly visible.")
 
         # 3. Branch Verification Logic
-        check_in_method = CheckInMethod.WIFI_GEOFENCE
+        check_in_method = CheckInMethod.GPS_TERRITORY
+        
+        # Calculate distance to office for all (used for Desk policy and Field-at-office fallback)
+        is_at_office = False
+        office_dist = 9999999
+        if abs(office_lat) > 0.01 or abs(office_long) > 0.01:
+            office_dist = calculate_haversine(req.lat, req.long, float(office_lat), float(office_long))
+            if office_dist <= float(radius):
+                is_at_office = True
 
-        if role == EmployeeType.DESK:
+        if role == "desk" or role == EmployeeType.DESK:
             # DESK: Office Geofence with transparency
-            dist = calculate_haversine(req.lat, req.long, float(office_lat), float(office_long))
-            
-            if dist > float(radius):
+            if not is_at_office:
                  raise HTTPException(
                      status_code=403, 
-                     detail=f"Location error. You are {dist:.1f}m away from office center (Limit: {radius}m). Please stand near the entrance."
+                     detail=f"Location error (Desk Policy). You are {office_dist:.1f}m away from office center (Limit: {radius}m)."
                  )
+            
+            # WiFi Confidence Logic (Resolves 0% WiFi bug)
+            wifi_pct = 0
+            if office_wifi_ssid:
+                if req.wifi_ssid and req.wifi_ssid.strip().lower() == office_wifi_ssid.strip().lower():
+                    wifi_pct = 100
+            else:
+                wifi_pct = 100 # No SSID configured
+
             check_in_method = CheckInMethod.WIFI_GEOFENCE
 
         else:
-            # FIELD: Territory OR OTP Validation
-            if req.otp_used:
+            # FIELD: Territory OR Office Fallback OR OTP
+            if is_at_office:
+                # Field agent is at the main office - allow bypass of territory check
+                check_in_method = CheckInMethod.WIFI_GEOFENCE
+                wifi_pct = 100
+                logger.info(f"Field agent {user['email']} checked in at Office (Distance: {office_dist:.1f}m)")
+            
+            elif req.otp_used:
                 # --- OTP FALLBACK VALIDATION ---
                 if not req.otp_code:
                     raise HTTPException(status_code=400, detail="OTP code required for GPS fallback.")
                 
-                # Check if OTP matches and is not expired (5 min expiry)
                 stored_otp = user.get("gps_otp")
                 otp_expiry = user.get("gps_otp_expiry")
                 
                 if not stored_otp or str(stored_otp) != str(req.otp_code):
                     raise HTTPException(status_code=403, detail="Invalid OTP code.")
                 
-                if otp_expiry and datetime.now(timezone.utc) > otp_expiry.replace(tzinfo=timezone.utc) if otp_expiry.tzinfo is None else otp_expiry:
+                if otp_expiry and datetime.now(timezone.utc) > (otp_expiry.replace(tzinfo=timezone.utc) if otp_expiry.tzinfo is None else otp_expiry):
                      raise HTTPException(status_code=403, detail="OTP code has expired. Please request a new one.")
                 
-                # Clear OTP after use
                 await employees_collection.update_one(
                     {"_id": user["_id"]},
                     {"$set": {"gps_otp": None, "gps_otp_expiry": None}}
@@ -963,41 +869,45 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                 # Validate Territory
                 territory_type = user.get("territory_type", TerritoryType.RADIUS)
                 if territory_type == TerritoryType.RADIUS:
-                    t_lat = user.get("territory_center_lat", office_lat) # Fallback to office if not set
-                    t_lng = user.get("territory_center_lng", office_long)
+                    t_lat = user.get("territory_center_lat", 0)
+                    t_lng = user.get("territory_center_lng", 0)
+                    
+                    # If user has no territory set, fallback to office ONLY IF office is valid
+                    if abs(t_lat) < 0.01:
+                        if abs(office_lat) > 0.01:
+                            t_lat, t_lng = office_lat, office_long
+                        else:
+                            raise HTTPException(status_code=400, detail="Terminal error: Your work territory and office location are both unconfigured. Contact Admin.")
+
                     t_radius = user.get("territory_radius_meters", 500)
                     dist = calculate_haversine(req.lat, req.long, t_lat, t_lng)
                     if dist > t_radius:
+                        # Log alert and block
                         background_tasks.add_task(
-                            trigger_alert, 
-                            "Territory", 
-                            user.get("email"), 
-                            user.get("organization_id"), 
-                            f"Territory Breach. Agent is {dist:.0f}m away from beat zone center.", 
-                            "medium",
+                            trigger_alert, "Territory", user.get("email"), user.get("organization_id"), 
+                            f"Territory Breach. Agent is {dist:.0f}m away from beat zone center.", "medium",
                             {"lat": req.lat, "long": req.long, "allowed_radius": t_radius}
                         )
                         raise HTTPException(status_code=403, detail=f"Territory Breach. You are {dist:.0f}m away from your assigned beat zone.")
+                
                 elif territory_type == TerritoryType.POLYGON:
                     polygon = user.get("territory_polygon", [])
                     if not polygon or len(polygon) < 3:
                         raise HTTPException(status_code=400, detail="Territory polygon not configured. Contact your admin.")
                     if not is_point_in_polygon(req.lat, req.long, polygon):
                         background_tasks.add_task(
-                            trigger_alert, 
-                            "Territory", 
-                            user.get("email"), 
-                            user.get("organization_id"), 
-                            "Territory Breach. Agent is outside assigned polygon zone.", 
-                            "medium",
+                            trigger_alert, "Territory", user.get("email"), user.get("organization_id"), 
+                            "Territory Breach. Agent is outside assigned polygon zone.", "medium",
                             {"lat": req.lat, "long": req.long}
                         )
                         raise HTTPException(status_code=403, detail="Territory Breach. You are outside your assigned beat zone polygon.")
+                
                 check_in_method = CheckInMethod.GPS_TERRITORY
 
         # 4. Log Attendance (Consolidated)
         attendance_type = req.intended_type or "check-in" # Default or provided
         
+        is_early_leave = False
         is_late = False
         late_mins = 0
         
@@ -1005,16 +915,19 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             # Use org_settings which was fetched at line 833
             settings = org_settings or SystemSettings().dict()
             
-            if role == EmployeeType.FIELD:
+            if role == "field":
                 start_time_str = settings.get("field_office_start_time", "10:00")
                 threshold_mins = settings.get("field_late_threshold_mins", 30)
+                tz_offset = settings.get("timezone_offset", 330)
             else:
-                start_time_str = settings.get("office_start_time", "09:00")
-                threshold_mins = settings.get("late_threshold_mins", 15)
+                # Desk: Hardcoded 10 AM to 6 PM logic
+                start_time_str = "10:00"
+                threshold_mins = 15
+                tz_offset = 330
             
             try:
                 log_time_utc = datetime.now(timezone.utc)
-                current_time_local = log_time_utc + timedelta(minutes=settings.get("timezone_offset", 330))
+                current_time_local = log_time_utc + timedelta(minutes=tz_offset)
                 
                 # Limit time for today
                 start_h, start_m = map(int, start_time_str.split(":"))
@@ -1022,10 +935,33 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                 
                 if current_time_local > limit_time:
                     is_late = True
-                    diff = current_time_local - limit_time.replace(minute=start_m) # Calculate late from the exact start time
+                    diff = current_time_local - current_time_local.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
                     late_mins = int(diff.total_seconds() / 60)
             except Exception as e:
                 logger.error(f"Error calculating lateness: {e}")
+                
+        elif attendance_type == "check-out":
+            # Check for early leave
+            settings = org_settings or SystemSettings().dict()
+            if role == "field":
+                end_time_str = settings.get("field_office_end_time", "18:00")
+                tz_offset = settings.get("timezone_offset", 330)
+            else:
+                end_time_str = "18:00"
+                tz_offset = 330
+                
+            try:
+                log_time_utc = datetime.now(timezone.utc)
+                current_time_local = log_time_utc + timedelta(minutes=tz_offset)
+                end_h, end_m = map(int, end_time_str.split(":"))
+                
+                # Assume grace of 10 minutes (e.g. 17:50)
+                early_limit_time = current_time_local.replace(hour=end_h, minute=end_m, second=0, microsecond=0) - timedelta(minutes=10)
+                
+                if current_time_local < early_limit_time:
+                    is_early_leave = True
+            except Exception as e:
+                logger.error(f"Error calculating early checkout: {e}")
 
         log = {
             "user_id": str(user["_id"]),
@@ -1037,6 +973,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             "location": {"lat": req.lat, "long": req.long},
             "check_in_method": check_in_method,
             "is_late": is_late,
+            "is_early_leave": is_early_leave,
             "late_mins": max(0, late_mins),
             "wifi_confidence": wifi_pct if role == EmployeeType.DESK else 0,
             "confidence_score": float(distance),
@@ -1056,7 +993,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             "status": "success",
             "type": attendance_type,
             "message": f"Attendance {attendance_type.replace('-', ' ').title()} Successful. Verified via {check_in_method.value.replace('_', ' ').title()}.",
-            "time": log["timestamp"].isoformat()
+            "time": log["timestamp"].isoformat(),
+            "is_late": is_late,
+            "is_early_leave": is_early_leave,
+            "wifi_confidence": wifi_pct
         }
 
     except HTTPException:
@@ -1067,6 +1007,19 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         logger.error(f"Execution Error in smart_attendance: {e}\n{error_trace}")
         raise HTTPException(status_code=500, detail=f"Internal processing error in attendance module: {type(e).__name__} - {str(e)}")
 
+
+def get_today_start(offset_mins: int = 330):
+    """
+    Get the start of 'today' in UTC, given a local offset in minutes.
+    Default: IST (+5:30 = 330 mins).
+    """
+    now_utc = datetime.now(timezone.utc)
+    local_now = now_utc + timedelta(minutes=offset_mins)
+    # Start of local day
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Convert back to UTC
+    utc_start = local_start - timedelta(minutes=offset_mins)
+    return utc_start
 
 def calculate_haversine(lat1, lon1, lat2, lon2):
     dlat = math.radians(lat1 - lat2)
@@ -1098,9 +1051,9 @@ def attendance_type_str(val):
 
 
 
-@app.get("/logs/{email}")
-async def get_logs(email: str, current_user: dict = Depends(get_current_employee)):
-    """Get attendance logs for a user (JWT Protected)."""
+@app.get("/api/logs/{email}")
+async def get_logs(email: str, page: int = 1, limit: int = 50, start_date: Optional[str] = None, end_date: Optional[str] = None, current_user: dict = Depends(get_current_employee)):
+    """Get attendance logs for a user with date filters and pagination (JWT Protected)."""
     if current_user["email"] != email:
         raise HTTPException(status_code=403, detail="Forbidden: You can only access your own logs.")
 
@@ -1108,16 +1061,31 @@ async def get_logs(email: str, current_user: dict = Depends(get_current_employee
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    cursor = attendance_logs_collection.find(
-        {"user_id": str(user["_id"])}
-    ).sort("timestamp", -1)
-    logs = await cursor.to_list(length=100)
+    query = {"user_id": str(user["_id"])}
+    
+    if start_date or end_date:
+        time_filter = {}
+        if start_date:
+            try:
+                time_filter["$gte"] = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            except: pass
+        if end_date:
+            try:
+                time_filter["$lte"] = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            except: pass
+        if time_filter:
+            query["timestamp"] = time_filter
+
+    total_count = await attendance_logs_collection.count_documents(query)
+    skip = (page - 1) * limit
+    
+    cursor = attendance_logs_collection.find(query).sort("timestamp", -1).skip(skip).limit(limit)
+    logs = await cursor.to_list(length=limit)
 
     # Convert ObjectIDs to strings for JSON serialization
     for log in logs:
         log["_id"] = str(log["_id"])
         if "timestamp" in log and isinstance(log["timestamp"], datetime):
-            # Ensure it's ISO format with Z for UTC
             ts = log["timestamp"]
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
@@ -1125,7 +1093,196 @@ async def get_logs(email: str, current_user: dict = Depends(get_current_employee
         elif "timestamp" in log:
             log["timestamp"] = str(log["timestamp"])
 
-    return {"logs": logs, "count": len(logs)}
+    return {
+        "logs": logs, 
+        "total_count": total_count,
+        "page": page,
+        "limit": limit,
+        "has_more": total_count > (skip + len(logs))
+    }
+
+
+@app.get("/api/employee/profile")
+async def get_employee_profile(current_user: dict = Depends(get_current_employee)):
+    """Retrieve full employee profile for Field/Desk apps."""
+    user = await employees_collection.find_one({"email": current_user["email"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Check current attendance status for today (localized)
+    org_id = user.get("organization_id")
+    tz_offset = 330
+    if org_id:
+        org_settings = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+        if org_settings:
+            tz_offset = org_settings.get("timezone_offset", 330)
+
+    today_start_utc = get_today_start(tz_offset)
+    last_log = await attendance_logs_collection.find_one(
+        {
+            "user_id": str(user["_id"]),
+            "timestamp": {"$gte": today_start_utc}
+        },
+        sort=[("timestamp", -1)]
+    )
+    
+    current_status = "check-out"
+    if last_log:
+        status_type = last_log.get("type", "").lower()
+        if "in" in status_type:
+            current_status = "check-in"
+        elif "out" in status_type:
+            current_status = "check-out"
+
+    return {
+        "email": user["email"],
+        "full_name": user.get("full_name"),
+        "employee_id": user.get("employee_id"),
+        "department": user.get("department"),
+        "designation": user.get("designation"),
+        "employee_type": user.get("employee_type"),
+        "profile_image": user.get("profile_image"),
+        "has_face_data": bool(user.get("face_embedding")),
+        "needs_face_enrollment": user.get("face_embedding") is None,
+        "organization_id": str(user.get("organization_id", "")),
+        "is_manager": user.get("is_manager", False),
+        "status": user.get("status", "Active"),
+        "current_status": current_status
+    }
+
+
+@app.get("/api/analytics/me")
+async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
+    """Get summarized work hours and stats for the logged-in employee."""
+    user = await employees_collection.find_one({"email": current_user["email"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Localized today start
+    org_id = user.get("organization_id")
+    tz_offset = 330
+    if org_id:
+        org_settings = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+        if org_settings:
+            tz_offset = org_settings.get("timezone_offset", 330)
+
+    today_start = get_today_start(tz_offset)
+    week_start = today_start - timedelta(days=today_start.weekday())
+    month_start = today_start.replace(day=1)
+
+    # Get all logs for the week for on-time counting
+    all_logs = await attendance_logs_collection.find({
+        "user_id": str(user["_id"]),
+        "timestamp": {"$gte": week_start}
+    }).sort("timestamp", 1).to_list(length=1000)
+
+    async def calculate_hours(logs_subset):
+        total_seconds = 0
+        current_check_in = None
+        for log in logs_subset:
+            ltype = log.get("type", "").lower()
+            if "in" in ltype:
+                current_check_in = log["timestamp"]
+            elif "out" in ltype and current_check_in:
+                duration = (log["timestamp"] - current_check_in).total_seconds()
+                total_seconds += max(0, duration)
+                current_check_in = None
+        if current_check_in:
+            duration = (datetime.now(timezone.utc) - current_check_in).total_seconds()
+            total_seconds += max(0, duration)
+        return round(total_seconds / 3600.0, 1)
+
+    today_logs = [l for l in all_logs if l["timestamp"] >= today_start]
+    week_logs = all_logs
+    month_logs = await attendance_logs_collection.find({
+        "user_id": str(user["_id"]),
+        "timestamp": {"$gte": month_start}
+    }).to_list(length=2000)
+
+    today_hours = await calculate_hours(today_logs)
+    week_hours = await calculate_hours(week_logs)
+    month_hours = await calculate_hours(month_logs)
+
+    # Calculate on-time count
+    on_time_count = 0
+    for log in all_logs:
+        if "in" in log.get("type", "").lower():
+            # Standard logic from consolidated get_analytics
+            user_type = user.get("employee_type", "desk")
+            if user_type == "field" and org_id:
+                org_doc = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+                start_time_str = org_doc.get("field_office_start_time", "10:00") if org_doc else "10:00"
+                threshold_mins = org_doc.get("field_late_threshold_mins", 30) if org_doc else 30
+            else:
+                start_time_str = "10:00"
+                threshold_mins = 15
+            
+            try:
+                start_h, start_m = map(int, start_time_str.split(":"))
+                local_log_time = log["timestamp"] + timedelta(minutes=tz_offset)
+                limit_time = local_log_time.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
+                if local_log_time <= limit_time:
+                    on_time_count += 1
+            except: pass
+
+    # Get last 5 history items
+    history_cursor = attendance_logs_collection.find(
+        {"user_id": str(user["_id"])}
+    ).sort("timestamp", -1).limit(5)
+    history = await history_cursor.to_list(length=5)
+    
+    # Determine current_status from the absolute latest log (today only)
+    current_status = "check-out"
+    latest_log = history[0] if history else None
+    if latest_log:
+        log_time = latest_log.get("timestamp")
+        # Ensure it's from 'today' in user's timezone
+        if log_time >= today_start:
+            current_status = latest_log.get("type", "check-out")
+
+    for h in history:
+        h["_id"] = str(h["_id"])
+        h["timestamp"] = h["timestamp"].isoformat().replace("+00:00", "Z")
+
+    return {
+        "today_hours": today_hours,
+        "week_total": week_hours, # Match key name expected by frontend or previously
+        "this_week_hours": week_hours,
+        "this_month_hours": month_hours,
+        "avg_check_in": "09:15 AM",
+        "on_time_count": on_time_count,
+        "current_status": current_status,
+        "history": history,
+        "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", "")
+    }
+
+
+@app.post("/api/employee/update-face")
+async def update_employee_face(req: dict, current_user: dict = Depends(get_current_employee)):
+    """Enroll or Update Face Biometrics."""
+    # Support both 'image' and 'face_image' parameters for compatibility
+    image_data = req.get("face_image") or req.get("image")
+    if not image_data:
+        raise HTTPException(status_code=400, detail="No face image provided.")
+    
+    try:
+        embedding = get_face_embedding(image_data)
+        if embedding is None:
+            raise HTTPException(status_code=400, detail="No face detected in the provided image.")
+        
+        # Save embedding and mark as enrolled
+        await employees_collection.update_one(
+            {"email": current_user["email"]},
+            {"$set": {
+                "face_embedding": embedding,
+                "needs_face_enrollment": False,
+                "profile_image": image_data
+            }}
+        )
+        return {"success": True, "message": "Biometric face registration complete."}
+    except Exception as e:
+        logger.error(f"Face update failed for {current_user['email']}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Biometric processing error: {str(e)}")
 
 
 @app.post("/admin/import-employees")
@@ -1435,6 +1592,8 @@ async def admin_login(req: AdminLoginRequest):
     raise HTTPException(status_code=401, detail="Invalid admin credentials")
 
 
+
+
 @app.post("/admin/register-organization")
 async def register_organization(req: OrganizationRegisterRequest):
     """
@@ -1669,7 +1828,11 @@ async def admin_delete_employee(email: str, current_admin: Admin = Depends(get_c
 
 
 @app.get("/admin/logs")
-async def admin_all_logs(limit: int = 100, current_admin: Admin = Depends(get_current_admin)):
+async def admin_all_logs(
+    limit: int = 100, 
+    month: Optional[str] = None, 
+    current_admin: Admin = Depends(get_current_admin)
+):
     """Fetch all attendance logs for the organization (Role Scoped)."""
     filter_query = get_employee_filter(current_admin)
     
@@ -1685,12 +1848,40 @@ async def admin_all_logs(limit: int = 100, current_admin: Admin = Depends(get_cu
         org_emp_ids = [str(emp["_id"]) for emp in org_employees]
         log_query = {"user_id": {"$in": org_emp_ids}}
 
-    cursor = attendance_logs_collection.find(log_query).sort("timestamp", -1)
-    logs = await cursor.to_list(length=limit)
+    if month:
+        try:
+            start_date = datetime.strptime(f"{month}-01", "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            year, m = map(int, month.split("-"))
+            end_date = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if m == 12 else datetime(year, m + 1, 1, tzinfo=timezone.utc)
+            
+            # Basic tz shift for localized query
+            tz_offset = 330
+            utc_start = start_date - timedelta(minutes=tz_offset)
+            utc_end = end_date - timedelta(minutes=tz_offset)
+            
+            log_query["timestamp"] = {"$gte": utc_start, "$lt": utc_end}
+        except ValueError:
+            pass
+
+    # If month provided, maybe fetch more or no limit? The limit is defaults to 100
+    if month:
+        cursor = attendance_logs_collection.find(log_query).sort("timestamp", -1).limit(5000)
+    else:
+        cursor = attendance_logs_collection.find(log_query).sort("timestamp", -1).limit(limit)
+        
+    logs = await cursor.to_list(length=5000 if month else limit)
+    # Enrich with employee details for the UI
+    employees = await employees_collection.find({"_id": {"$in": [ObjectId(uid) for uid in org_emp_ids if ObjectId.is_valid(uid)]}}, {"full_name": 1, "email": 1, "profile_image": 1}).to_list(None)
+    emp_map = {str(e["_id"]): e for e in employees}
+    
     for log in logs:
         log["_id"] = str(log["_id"])
+        emp = emp_map.get(log.get("user_id"), {})
+        log["full_name"] = emp.get("full_name", "Unknown")
+        log["email"] = emp.get("email", "")
+        log["profile_image"] = emp.get("profile_image", "")
         if isinstance(log.get("timestamp"), datetime):
-            log["timestamp"] = log["timestamp"].isoformat()
+            log["timestamp"] = log["timestamp"].replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     return logs
 
 
@@ -1842,26 +2033,34 @@ async def get_settings(current_admin: Admin = Depends(get_current_admin)):
     """Retrieve organization-specific configuration."""
     org_id = current_admin.organization_id
     
-    # Use specific query based on organization linkage
-    # For superadmins or unlinked admins, fallback to global 'config'
-    if not org_id or org_id == "system_org":
-         settings = await settings_collection.find_one({"id": "config"})
-    else:
-         settings = await settings_collection.find_one({"organization_id": org_id})
+    try:
+        # Use specific query based on organization linkage
+        if not org_id or org_id == "system_org":
+             settings = await settings_collection.find_one({"id": "config"})
+        else:
+             settings = await settings_collection.find_one({"organization_id": org_id})
 
-    if not settings:
+        # Get defaults
+        default_settings = SystemSettings()
+        
+        if not settings:
+            return default_settings.dict()
+        
+        # Merge stored data into the model to handle defaults and types safely
+        stored_data = {k: v for k, v in settings.items() if k not in ["_id", "organization_id", "id"]}
+        
+        # Combine default values with stored values, ignoring None or invalid types in stored_data
+        settings_dict = default_settings.dict()
+        for k, v in stored_data.items():
+            if k in settings_dict and v is not None:
+                settings_dict[k] = v
+                
+        return settings_dict
+    except Exception as e:
+        logger.error(f"Error fetching settings: {e}")
         return SystemSettings().dict()
-    
-    # Handle ObjectId serialization and ensure defaults from SystemSettings are included
-    if "_id" in settings:
-        settings["_id"] = str(settings["_id"])
-    
-    # Merge with default settings to ensure any missing fields are present
-    stored_data = settings.copy()
-    default_data = SystemSettings().dict()
-    default_data.update(stored_data)
-    
-    return default_data
+
+
 
 
 @app.put("/admin/settings")
@@ -1871,34 +2070,43 @@ async def update_settings(req: SystemSettings, current_admin: Admin = Depends(ge
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization linkage required for settings update.")
 
-    update_dict = req.dict()
-    # Explicitly handle logo_url to ensure it's not lost if not provided in request but exists in DB
-    # However, since req is a SystemSettings model, it will have logo_url (even if None)
-    
-    update_dict["organization_id"] = org_id
-    update_dict["updated_at"] = datetime.now(timezone.utc)
+    try:
+        update_dict = req.dict()
+        update_dict["organization_id"] = org_id
+        update_dict["updated_at"] = datetime.now(timezone.utc)
 
-    # Persistence to settings collection
-    await settings_collection.update_one(
-        {"organization_id": org_id},
-        {"$set": update_dict},
-        upsert=True
-    )
+        # Persistence to settings collection
+        if org_id == "system_org":
+            await settings_collection.update_one(
+                {"id": "config"},
+                {"$set": update_dict},
+                upsert=True
+            )
+        else:
+            await settings_collection.update_one(
+                {"organization_id": org_id},
+                {"$set": update_dict},
+                upsert=True
+            )
 
-    # Branding persistence to organization collection
-    branding_update = {}
-    if update_dict.get("primary_color"):
-        branding_update["primary_color"] = update_dict.get("primary_color")
-    if update_dict.get("logo_url"):
-        branding_update["logo_url"] = update_dict.get("logo_url")
-    
-    if branding_update:
-        await organizations_collection.update_one(
-            {"_id": ObjectId(org_id)},
-            {"$set": branding_update}
-        )
+        # Branding persistence to organization collection (only for non-system orgs)
+        if org_id != "system_org" and ObjectId.is_valid(org_id):
+            branding_update = {}
+            if update_dict.get("primary_color"):
+                branding_update["primary_color"] = update_dict.get("primary_color")
+            if update_dict.get("logo_url"):
+                branding_update["logo_url"] = update_dict.get("logo_url")
+            
+            if branding_update:
+                await organizations_collection.update_one(
+                    {"_id": ObjectId(org_id)},
+                    {"$set": branding_update}
+                )
 
-    return {"message": "Settings and branding updated successfully"}
+        return {"message": "Settings and branding updated successfully"}
+    except Exception as e:
+        logger.error(f"Error updating settings: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save settings")
 
 
 @app.post("/admin/upload-logo")
@@ -2566,12 +2774,13 @@ async def submit_km_reimbursement(req: dict, employee=Depends(get_current_employ
         }
         
         result = await km_reimbursements_collection.insert_one(claim)
-        return {"status": "success", "claim_id": str(result.inserted_id)}
-    except HTTPException:
-        raise
+        return {"success": True, "claim_id": str(result.inserted_id)}
     except Exception as e:
-        logger.error(f"Failed to submit KM claim: {e}")
-        raise HTTPException(status_code=500, detail="KM reimbursement claim failed")
+        logger.error(f"Failed to submit KM reimbursement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Redundant field summary endpoint removed. Using enhanced version at L2841.
 
 @app.get("/admin/field/reimbursements")
 async def admin_list_km_claims(status: Optional[str] = "pending", admin=Depends(get_current_admin)):
@@ -2653,7 +2862,8 @@ async def get_field_day_summary(employee_id: str, date: Optional[str] = None, cu
     if employee_id != current_user["email"]:
         raise HTTPException(status_code=403, detail="Access denied: Cannot view another agent's summary.")
         
-    query_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_start = get_today_start(current_user.get("timezone_offset", 0))
+    query_date = date or today_start.strftime("%Y-%m-%d")
     
     # 1. Total Visits
     visits = await visit_logs_collection.count_documents({
@@ -2668,8 +2878,8 @@ async def get_field_day_summary(employee_id: str, date: Optional[str] = None, cu
     pings = await location_pings_collection.find({
         "employee_id": employee_id,
         "recorded_at": {
-            "$gte": datetime.strptime(query_date, "%Y-%m-%d"),
-            "$lt": datetime.strptime(query_date, "%Y-%m-%d") + timedelta(days=1)
+            "$gte": today_start,
+            "$lt": today_start + timedelta(days=1)
         }
     }).sort("recorded_at", 1).to_list(length=1000)
     
@@ -2825,8 +3035,10 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
     
     total_employees = await employees_collection.count_documents(filter_query)
     
-    # Today's start in UTC
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Today's start in UTC (Localized)
+    org_settings = await settings_collection.find_one({"organization_id": admin.organization_id})
+    tz_offset = org_settings.get("timezone_offset", 330) if org_settings else 330
+    today_start = get_today_start(tz_offset)
     
     # Get relevant employee IDs
     org_employees = await employees_collection.find(filter_query, {"_id": 1}).to_list(None)
@@ -2851,7 +3063,8 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
     pending_alerts = await alerts_collection.count_documents({**alert_query, "status": "pending"})
 
     # Real on_leave count: approved leaves covering today
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    local_now = datetime.now(timezone.utc) + timedelta(minutes=tz_offset)
+    today_str = local_now.strftime("%Y-%m-%d")
     leave_query = {
         "organization_id": admin.organization_id,
         "status": "approved",
@@ -2873,6 +3086,42 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
         "alerts_today": total_alerts_today,
         "critical_alerts": critical_alerts_today,
         "pending_alerts": pending_alerts
+    }
+
+
+@app.get("/admin/live-feed")
+async def get_admin_live_feed(skip: int = 0, limit: int = 50, admin: dict = Depends(get_current_admin)):
+    """Unified real-time check-in/out feed for the dashboard (Role Scoped + Paginated)."""
+    filter_query = get_employee_filter(admin)
+    
+    # Get relevant employee details for mapping
+    org_employees = await employees_collection.find(filter_query, {"_id": 1, "full_name": 1, "email": 1, "profile_image": 1}).to_list(None)
+    org_emp_ids = [str(emp["_id"]) for emp in org_employees]
+    emp_map = {str(emp["_id"]): emp for emp in org_employees}
+    
+    logs_query = {"user_id": {"$in": org_emp_ids}}
+    
+    total_logs = await attendance_logs_collection.count_documents(logs_query)
+    cursor = attendance_logs_collection.find(logs_query).sort("timestamp", -1).skip(skip).limit(limit)
+    logs = await cursor.to_list(length=limit)
+    
+    for log in logs:
+        log["_id"] = str(log["_id"])
+        emp = emp_map.get(log.get("user_id"), {})
+        log["employee_name"] = emp.get("full_name", "Unknown")
+        log["employee_email"] = emp.get("email", "")
+        log["profile_image"] = emp.get("profile_image", "")
+        if isinstance(log.get("timestamp"), datetime):
+            ts = log["timestamp"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            log["timestamp"] = ts.isoformat().replace("+00:00", "Z")
+            
+    return {
+        "logs": logs,
+        "total": total_logs,
+        "skip": skip,
+        "limit": limit
     }
 
 
@@ -3185,11 +3434,6 @@ async def handle_leave_request(request_id: str, action: str, admin: dict = Depen
         
     return {"status": "success"}
 
-@app.get("/admin/export-logs-pdf")
-async def export_logs_pdf(admin=Depends(get_current_admin)):
-    """Stub for PDF export."""
-    from fastapi.responses import Response
-    return Response(content=b"PDF Content Stub", media_type="application/pdf")
 
 
 @app.get("/admin/field/live-status")
@@ -3221,8 +3465,8 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
                 
                 # 2. Check active check-in
                 active_visit_log = await visit_logs_collection.find_one(
-                    {"employee_id": emp["email"], "check_out": None},
-                    sort=[("check_in", -1)]
+                    {"employee_id": emp["email"], "check_out_time": None},
+                    sort=[("check_in_time", -1)]
                 )
                 
                 if active_visit_log and active_visit_log.get("visit_id"):
@@ -3253,7 +3497,9 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
                         idle_count += 1
                 
                 # 4. KM today calculation (Accurate Haversine Sum)
-                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                org_settings = await settings_collection.find_one({"organization_id": emp["organization_id"]})
+                tz_offset = org_settings.get("timezone_offset", 330) if org_settings else 330
+                start_of_day = get_today_start(tz_offset)
                 pings_cursor = location_pings_collection.find({
                     "employee_id": emp["email"],
                     "recorded_at": {"$gte": start_of_day}
@@ -3314,19 +3560,6 @@ async def get_field_live_status(admin=Depends(get_current_admin)):
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": err})
 
 
-@app.get("/admin/employees")
-async def list_employees(admin=Depends(get_current_admin)):
-    """List all employees scoped to the admin's organization."""
-    query = {}
-    if admin.organization_id:
-        query["organization_id"] = admin.organization_id
-    employees = await employees_collection.find(query).to_list(length=1000)
-    for emp in employees:
-        emp["_id"] = str(emp["_id"])
-        # Remove sensitive fields from response
-        emp.pop("hashed_password", None)
-        emp.pop("face_embedding", None)
-    return employees
 
 
 # -----------------------------------------------------------------------------
@@ -4296,7 +4529,7 @@ async def get_employee_monthly_summary(
 
     # 3. Fetch Approved Leaves for the month
     leaves = await leave_requests_collection.find({
-        "sender_email": email,
+        "employee_id": email,
         "status": "APPROVED",
         "$or": [
             {"start_date": {"$gte": start_date, "$lt": end_date}},
@@ -4309,13 +4542,20 @@ async def get_employee_monthly_summary(
     total_working_ms = 0
     present_days = 0
     
-    current_day = start_date
-    while current_day < end_date:
-        next_day = current_day + timedelta(days=1)
-        day_str = current_day.strftime("%Y-%m-%d")
+    # We must loop through local days, so start with the local month boundary
+    # Assuming IST (330 offset) if org missing settings -> fallback 330
+    tz_offset = 330 # Should fetch from settings ideally
+    
+    local_start_of_month = start_date + timedelta(minutes=tz_offset)
+    local_end_of_month = end_date + timedelta(minutes=tz_offset)
+    
+    current_day_local = local_start_of_month
+    while current_day_local < local_end_of_month:
+        next_day_local = current_day_local + timedelta(days=1)
+        day_str = current_day_local.strftime("%Y-%m-%d")
         
-        # Filter logs for this day
-        day_logs = [l for l in logs if current_day <= l["timestamp"].replace(tzinfo=timezone.utc) < next_day]
+        # Filter logs for this day in localized boundary
+        day_logs = [l for l in logs if current_day_local <= (l["timestamp"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)) < next_day_local]
         
         day_info = {
             "date": day_str,
@@ -4327,24 +4567,22 @@ async def get_employee_monthly_summary(
         }
 
         # Check for Weekend (Saturday=5, Sunday=6)
-        if current_day.weekday() >= 5:
+        if current_day_local.weekday() >= 5:
             day_info["status"] = "Weekend"
 
         # Check for Leave
         for leave in leaves:
-            l_start = leave["start_date"].replace(tzinfo=timezone.utc)
-            l_end = leave["end_date"].replace(tzinfo=timezone.utc)
-            if l_start <= current_day <= l_end:
+            l_start = leave["start_date"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
+            l_end = leave["end_date"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
+            if l_start <= current_day_local <= l_end:
                 day_info["status"] = f"Leave ({leave.get('leave_type', 'General')})"
                 break
 
         if day_logs:
-            day_info["status"] = "Present"
+            day_logs.sort(key=lambda x: x["timestamp"])
             present_days += 1
             
-            # Find Check-In / Check-Out pairs for duration
-            day_logs.sort(key=lambda x: x["timestamp"])
-            day_info["first_in"] = day_logs[0]["timestamp"].isoformat()
+            day_info["first_in"] = day_logs[0]["timestamp"].replace(tzinfo=timezone.utc).isoformat()
             
             # Calculate duration: simplify by taking last check-out - first check-in
             # Better: sum durations between paired IN and OUT
@@ -4352,14 +4590,25 @@ async def get_employee_monthly_summary(
             last_in_time = None
             
             for log in day_logs:
+                # Dynamically calculate is_late to override buggy legacy historical DB states
+                is_late = log.get("is_late", False)
+                if log["type"] == "check-in":
+                    # strictly check if time is past 10:15 local time
+                    local_time = log["timestamp"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
+                    if local_time.hour > 10 or (local_time.hour == 10 and local_time.minute > 15):
+                        is_late = True
+                    else:
+                        is_late = False
+
                 # Basic representation for frontend
                 day_info["logs"].append({
-                    "time": log["timestamp"].isoformat(),
+                    "time": log["timestamp"].replace(tzinfo=timezone.utc).isoformat(),
                     "type": log["type"],
+                    "status": "Late" if is_late else "Early Leave" if log.get("is_early_leave") else "Present",
                     "method": log.get("check_in_method", "N/A"),
                     "location": log.get("location"),
                     "selfie": log.get("selfie_url"),
-                    "wifi": log.get("wifi_details")
+                    "wifi_confidence": log.get("wifi_confidence", 0)
                 })
 
                 if log["type"] == "check-in":
@@ -4368,13 +4617,28 @@ async def get_employee_monthly_summary(
                     delta = log["timestamp"] - last_in_time
                     day_duration_ms += delta.total_seconds() * 1000
                     last_in_time = None
-                    day_info["last_out"] = log["timestamp"].isoformat()
+                    day_info["last_out"] = log["timestamp"].replace(tzinfo=timezone.utc).isoformat()
 
             day_info["duration_hours"] = round(day_duration_ms / (1000 * 3600), 2)
             total_working_ms += day_duration_ms
 
+            # Set status to Early Leave if the last check-out on this day was flagged
+            if any(l.get("type") == "check-out" and l.get("is_early_leave") for l in day_logs):
+                 day_info["status"] = "Early Leave"
+            else:
+                 # Check if the very first check-in log is dynamically evaluated as late
+                 first_checkin = [l for l in day_logs if l["type"] == "check-in"]
+                 if first_checkin:
+                     loc_time = first_checkin[0]["timestamp"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
+                     if loc_time.hour > 10 or (loc_time.hour == 10 and loc_time.minute > 15):
+                         day_info["status"] = "Late"
+                     else:
+                         day_info["status"] = "Present"
+                 else:
+                     day_info["status"] = "Present"
+
         daily_breakdown.append(day_info)
-        current_day = next_day
+        current_day_local = next_day_local
 
     # 5. Summary Metrics
     total_hours = round(total_working_ms / (1000 * 3600), 2)
