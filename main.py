@@ -106,6 +106,14 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+@app.middleware("http")
+async def add_cache_control_header(request: Request, call_next):
+    response = await call_next(request)
+    # Prevent caching of API responses to ensure real-time data accuracy
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 @app.get("/health")
 async def health_check():
