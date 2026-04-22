@@ -19,6 +19,7 @@ import logging
 import base64
 import uuid
 from fastapi.staticfiles import StaticFiles
+import requests
 
 # Configure Logging
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -109,6 +110,26 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+# --- GEOCODING PROXY ---
+@app.get("/api/geocoding/reverse")
+async def reverse_geocode(lat: float, lon: float):
+    """
+    Proxy for Nominatim reverse geocoding to bypass CORS and 429 errors.
+    Uses a server-side User-Agent to comply with Nominatim's policy.
+    """
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}"
+        headers = {
+            "User-Agent": "LogDayAttendanceApp/1.0 (contact: roboaiapaths99@gmail.com)"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Geocoding proxy error: {str(e)}")
+        # Fail gracefully with coordinatess if geocoding fails
+        return {"display_name": f"{lat:.4f}, {lon:.4f}", "address": {}}
 
 # --- API PREFIX MIDDLEWARE ---
 # Automatically routes /api/* to /* if the prefix is missing in main.py
