@@ -99,12 +99,16 @@ app.add_middleware(
         "http://localhost",
         "http://10.0.2.2", # Android emulator
     ],
-    allow_origin_regex=r"https?://.*", # Very permissive for debugging, will narrow later
+    # allow_origin_regex=r"https?://.*", # Very permissive for debugging, will narrow later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 # --- API PREFIX MIDDLEWARE ---
 # Automatically routes /api/* to /* if the prefix is missing in main.py
