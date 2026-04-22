@@ -684,7 +684,7 @@ async def verify_presence(req: VerifyPresenceRequest):
     log = {
         "user_id": str(user["_id"]),
         "email": req.email,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "type": attendance_type,
         "status": "SUCCESS",
         "location": {"lat": req.lat, "long": req.long},
@@ -1469,14 +1469,16 @@ async def admin_export_logs_pdf(current_admin: Admin = Depends(get_current_admin
         
         styles = getSampleStyleSheet()
         elements.append(Paragraph("LogDay Attendance Audit Report", styles['Title']))
-        elements.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}", styles['Normal']))
+        elements.append(Paragraph(f"Generated on: {datetime.now(timezone.utc).astimezone(timezone(timedelta(minutes=330))).strftime('%Y-%m-%d %I:%M %p')} (IST)", styles['Normal']))
         elements.append(Spacer(1, 20))
         
         data = [["Timestamp", "Employee Name", "Type", "Location", "Verification"]]
         for log in logs:
             ts = log.get("timestamp")
             if isinstance(ts, datetime):
-                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                # Localize to IST for PDF Display
+                ist_ts = ts.astimezone(timezone(timedelta(minutes=330)))
+                ts_str = ist_ts.strftime("%Y-%m-%d %I:%M %p")
             else:
                 ts_str = str(ts)
                 
@@ -1507,7 +1509,7 @@ async def admin_export_logs_pdf(current_admin: Admin = Depends(get_current_admin
         return StreamingResponse(
         buffer,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=attendance_report_{datetime.now().strftime('%Y%m%d')}.pdf"}
+        headers={"Content-Disposition": f"attachment; filename=attendance_report_{datetime.now(timezone.utc).astimezone(timezone(timedelta(minutes=330))).strftime('%Y%m%d')}.pdf"}
     )
     except Exception as e:
         logger.error(f"PDF export error: {e}")
@@ -1533,7 +1535,7 @@ async def admin_export_logs_excel(current_admin: Admin = Depends(get_current_adm
             data.append({
                 "Employee": log.get("full_name") or log.get("email"),
                 "Email": log.get("email"),
-                "Time": log.get("timestamp").strftime("%Y-%m-%d %H:%M:%S") if log.get("timestamp") else "N/A",
+                "Time": (log.get("timestamp").astimezone(timezone(timedelta(minutes=330))).strftime("%Y-%m-%d %H:%M:%S") + " (IST)") if log.get("timestamp") else "N/A",
                 "Type": log.get("type").title(),
                 "Late": "Yes" if log.get("is_late") else "No",
                 "Late Mins": log.get("late_mins", 0),
@@ -1553,7 +1555,7 @@ async def admin_export_logs_excel(current_admin: Admin = Depends(get_current_adm
         return StreamingResponse(
             buffer,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename=attendance_logs_{datetime.now().strftime('%Y%m%d')}.xlsx"}
+            headers={"Content-Disposition": f"attachment; filename=attendance_logs_{datetime.now(timezone.utc).astimezone(timezone(timedelta(minutes=330))).strftime('%Y%m%d')}.xlsx"}
         )
     except Exception as e:
         logger.error(f"Excel export error: {e}")
@@ -1638,7 +1640,7 @@ async def register_organization(req: OrganizationRegisterRequest):
             "slug": req.org_slug,
             "logo_url": req.logo_url,
             "primary_color": req.primary_color,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         org_result = await organizations_collection.insert_one(new_org)
         org_id = str(org_result.inserted_id)
@@ -1651,7 +1653,7 @@ async def register_organization(req: OrganizationRegisterRequest):
             "full_name": req.admin_full_name,
             "role": "owner",
             "organization_id": org_id,  # Link to the new Org
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         await admins_collection.insert_one(new_admin)
 
@@ -1662,7 +1664,7 @@ async def register_organization(req: OrganizationRegisterRequest):
             "late_threshold_mins": 15,
             "half_day_hours": 4,
             "full_day_hours": 8,
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.now(timezone.utc)
         }
         await settings_collection.insert_one(default_settings)
 
