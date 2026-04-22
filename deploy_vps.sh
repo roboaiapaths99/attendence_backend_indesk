@@ -14,7 +14,8 @@ echo "Stopping and removing existing container..."
 docker stop logday-api && docker rm logday-api
 
 echo "Building new docker image..."
-docker build --progress=plain -t logday-backend .
+export DOCKER_BUILDKIT=1
+docker build -t logday-backend .
 
 echo "Starting new container..."
 docker run -d \
