@@ -3112,16 +3112,57 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
 
     on_leave_count = await leave_requests_collection.count_documents(leave_query)
 
+    # Calculate Absent count (Total - ClockedIn - OnLeave)
+    # This is a simplified dashboard metric
+    absent_count = max(0, total_employees - clocked_in_today - on_leave_count)
+
     return {
         "total_employees": total_employees,
         "clocked_in_today": clocked_in_today,
         "late_arrivals_today": total_alerts_today, 
         "on_leave": on_leave_count,
+        "absent_today": absent_count,
         "avg_hours": 8.5,
         "alerts_today": total_alerts_today,
         "critical_alerts": critical_alerts_today,
         "pending_alerts": pending_alerts
     }
+
+
+@app.get("/admin/stats/attendance-chart")
+async def get_attendance_chart(admin: dict = Depends(get_current_admin)):
+    """Attendance volume over the last 7 days (Role Scoped)."""
+    filter_query = get_employee_filter(admin)
+    org_employees = await employees_collection.find(filter_query, {"_id": 1}).to_list(None)
+    org_emp_ids = [str(emp["_id"]) for emp in org_employees]
+
+    org_settings = await settings_collection.find_one({"organization_id": admin.organization_id})
+    tz_offset = org_settings.get("timezone_offset", 330) if org_settings else 330
+
+    chart_data = []
+    local_now = datetime.now(timezone.utc) + timedelta(minutes=tz_offset)
+    
+    for i in range(6, -1, -1):
+        day = local_now - timedelta(days=i)
+        day_str = day.strftime("%a") # Mon, Tue...
+        
+        # Local boundaries for this day
+        day_start_local = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end_local = day_start_local + timedelta(days=1)
+        
+        # Convert back to UTC for query
+        day_start_utc = day_start_local - timedelta(minutes=tz_offset)
+        day_end_utc = day_end_local - timedelta(minutes=tz_offset)
+        
+        count = await attendance_logs_collection.count_documents({
+            "timestamp": {"$gte": day_start_utc, "$lt": day_end_utc},
+            "type": "check-in",
+            "user_id": {"$in": org_emp_ids}
+        })
+        
+        chart_data.append({"name": day_str, "count": count})
+        
+    return chart_data
 
 
 @app.get("/admin/live-feed")
@@ -4563,12 +4604,13 @@ async def get_employee_monthly_summary(
     }).sort("timestamp", 1).to_list(length=1000)
 
     # 3. Fetch Approved Leaves for the month
+    # Note: start_date and end_date in DB are strings like "2026-04-20"
     leaves = await leave_requests_collection.find({
         "employee_id": email,
-        "status": "APPROVED",
+        "status": "approved",
         "$or": [
-            {"start_date": {"$gte": start_date, "$lt": end_date}},
-            {"end_date": {"$gte": start_date, "$lt": end_date}}
+            {"start_date": {"$gte": month + "-01", "$lt": next_month.strftime("%Y-%m-%d")}},
+            {"end_date": {"$gte": month + "-01", "$lt": next_month.strftime("%Y-%m-%d")}}
         ]
     }).to_list(length=50)
 
@@ -4576,13 +4618,15 @@ async def get_employee_monthly_summary(
     daily_breakdown = []
     total_working_ms = 0
     present_days = 0
+    absent_days = 0
+    leaves_count = 0
     
     # We must loop through local days, so start with the local month boundary
     # Assuming IST (330 offset) if org missing settings -> fallback 330
     tz_offset = 330 # Should fetch from settings ideally
     
     local_start_of_month = start_date + timedelta(minutes=tz_offset)
-    local_end_of_month = end_date + timedelta(minutes=tz_offset)
+    local_end_of_month = local_now if (local_now := (datetime.now(timezone.utc) + timedelta(minutes=tz_offset))) < local_end_of_month else local_end_of_month
     
     current_day_local = local_start_of_month
     while current_day_local < local_end_of_month:
@@ -4606,11 +4650,12 @@ async def get_employee_monthly_summary(
             day_info["status"] = "Weekend"
 
         # Check for Leave
+        is_on_leave = False
         for leave in leaves:
-            l_start = leave["start_date"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
-            l_end = leave["end_date"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)
-            if l_start <= current_day_local <= l_end:
+            if leave["start_date"] <= day_str <= leave["end_date"]:
                 day_info["status"] = f"Leave ({leave.get('leave_type', 'General')})"
+                is_on_leave = True
+                leaves_count += 1
                 break
 
         if day_logs:
@@ -4671,6 +4716,10 @@ async def get_employee_monthly_summary(
                          day_info["status"] = "Present"
                  else:
                      day_info["status"] = "Present"
+        else:
+            # Not present and not weekend and not leave -> Absent
+            if day_info["status"] == "Absent":
+                absent_days += 1
 
         daily_breakdown.append(day_info)
         current_day_local = next_day_local
@@ -4691,7 +4740,8 @@ async def get_employee_monthly_summary(
             "total_working_hours": total_hours,
             "average_daily_hours": avg_hours,
             "present_days": present_days,
-            "leaves_taken": len(leaves)
+            "leaves_taken": len(leaves),
+            "absent_days": absent_days
         },
         "daily_breakdown": daily_breakdown
     }
