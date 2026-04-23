@@ -4604,14 +4604,15 @@ async def get_employee_monthly_summary(
     }).sort("timestamp", 1).to_list(length=1000)
 
     # 3. Fetch Approved Leaves for the month
-    # Note: start_date and end_date in DB are strings like "2026-04-20"
+    # Fix: Correct overlap logic and case-insensitivity for status
+    month_start_str = month + "-01"
+    month_end_str = next_month.strftime("%Y-%m-%d")
+    
     leaves = await leave_requests_collection.find({
         "employee_id": email,
-        "status": "approved",
-        "$or": [
-            {"start_date": {"$gte": month + "-01", "$lt": next_month.strftime("%Y-%m-%d")}},
-            {"end_date": {"$gte": month + "-01", "$lt": next_month.strftime("%Y-%m-%d")}}
-        ]
+        "status": {"$regex": "^approved$", "$options": "i"},
+        "start_date": {"$lt": month_end_str},
+        "end_date": {"$gte": month_start_str}
     }).to_list(length=50)
 
     # 4. Process Data Day by Day
@@ -4626,10 +4627,14 @@ async def get_employee_monthly_summary(
     tz_offset = 330 # Should fetch from settings ideally
     
     local_start_of_month = start_date + timedelta(minutes=tz_offset)
-    local_end_of_month = local_now if (local_now := (datetime.now(timezone.utc) + timedelta(minutes=tz_offset))) < local_end_of_month else local_end_of_month
+    local_month_end = end_date + timedelta(minutes=tz_offset)
+    local_now = datetime.now(timezone.utc) + timedelta(minutes=tz_offset)
+    
+    # Use the earlier of (End of Month) or (Today) for the loop boundary
+    local_end_boundary = local_now if local_now < local_month_end else local_month_end
     
     current_day_local = local_start_of_month
-    while current_day_local < local_end_of_month:
+    while current_day_local < local_end_boundary:
         next_day_local = current_day_local + timedelta(days=1)
         day_str = current_day_local.strftime("%Y-%m-%d")
         
