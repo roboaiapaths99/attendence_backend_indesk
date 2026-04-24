@@ -783,20 +783,19 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             sort=[("timestamp", -1)]
         )
 
+        # Session Validation: Simple State Machine
         if attendance_type == "check-in":
             if last_log and last_log.get("type") == "check-in":
-                # Ensure last_log["timestamp"] is aware before subtraction
-                last_log_ts = last_log["timestamp"]
-                if last_log_ts.tzinfo is None:
-                    last_log_ts = last_log_ts.replace(tzinfo=timezone.utc)
-                
-                hours_since = (datetime.now(timezone.utc) - last_log_ts).total_seconds() / 3600
-                if hours_since < 12:
-                    raise HTTPException(status_code=400, detail="You are already checked in. Please check out first before checking in again.")
+                raise HTTPException(
+                    status_code=400, 
+                    detail="You are already checked in. Please check out first before checking in again."
+                )
         elif attendance_type == "check-out":
             if not last_log or last_log.get("type") == "check-out":
-                # Instead of crashing entirely, we can log an orphan checkout or warn user, but current requirements say we throw 400.
-                raise HTTPException(status_code=400, detail="You haven't checked in today yet. Please check in first.")
+                raise HTTPException(
+                    status_code=400, 
+                    detail="You haven't checked in today. Please check in first before checking out."
+                )
 
         # 2. Universal Security: Mock Location & Face Match
         if req.mock_detected:
@@ -1163,13 +1162,7 @@ async def get_employee_profile(current_user: dict = Depends(get_current_employee
         sort=[("timestamp", -1)]
     )
     
-    current_status = "check-out"
-    if last_log:
-        status_type = last_log.get("type", "").lower()
-        if "in" in status_type:
-            current_status = "check-in"
-        elif "out" in status_type:
-            current_status = "check-out"
+    current_status = last_log.get("type", "check-out") if last_log else "check-out"
 
     return {
         "email": user["email"],
@@ -1272,14 +1265,12 @@ async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
     ).sort("timestamp", -1).limit(5)
     history = await history_cursor.to_list(length=5)
     
-    # Determine current_status from the absolute latest log (today only)
-    current_status = "check-out"
-    latest_log = history[0] if history else None
-    if latest_log:
-        log_time = latest_log.get("timestamp")
-        # Ensure it's from 'today' in user's timezone
-        if log_time >= today_start:
-            current_status = latest_log.get("type", "check-out")
+    # Determine current_status from today's latest log (guarantees sync with validator)
+    latest_today = await attendance_logs_collection.find_one(
+        {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start}},
+        sort=[("timestamp", -1)]
+    )
+    current_status = latest_today.get("type", "check-out") if latest_today else "check-out"
 
     for h in history:
         h["_id"] = str(h["_id"])
