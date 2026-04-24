@@ -4638,7 +4638,22 @@ async def get_employee_monthly_summary(
         day_str = current_day_local.strftime("%Y-%m-%d")
         
         # Filter logs for this day in localized boundary
-        day_logs = [l for l in logs if current_day_local <= (l["timestamp"].replace(tzinfo=timezone.utc) + timedelta(minutes=tz_offset)) < next_day_local]
+        day_logs = []
+        for l in logs:
+            ts = l.get("timestamp")
+            if not ts:
+                continue
+            
+            # Ensure timestamp is UTC aware
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+            
+            # Localize for comparison
+            local_ts = ts + timedelta(minutes=tz_offset)
+            if current_day_local <= local_ts < next_day_local:
+                day_logs.append(l)
         
         day_info = {
             "date": day_str,
