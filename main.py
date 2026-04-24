@@ -621,7 +621,15 @@ async def change_password(req: ChangePasswordRequest, employee=Depends(get_curre
             "force_password_change": False
         }}
     )
-    return {"status": "success", "message": "Password updated successfully"}
+    
+    # Check if face enrollment is still needed
+    needs_enrollment = user.get("face_embedding") is None
+    
+    return {
+        "status": "success", 
+        "message": "Password updated successfully",
+        "needs_face_enrollment": needs_enrollment
+    }
 
 
 @app.post("/verify-presence")
@@ -707,6 +715,7 @@ async def verify_presence(req: VerifyPresenceRequest):
     return {
         "status": "success",
         "type": attendance_type,
+        "current_status": attendance_type, # Provide immediate state for UI sync
         "message": f"{attendance_type.replace('-', ' ').title()} recorded at {log['timestamp'].strftime('%I:%M %p')}",
         "time": str(log["timestamp"]),
         "distance_from_office": f"{dist_meters:.1f}m",
@@ -775,11 +784,10 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         tz_offset = 330 # Default IST
         if org_settings:
             tz_offset = org_settings.get("timezone_offset", 330)
-        
-        today_start_utc = get_today_start(tz_offset)
-        
+        # Session Validation: Use absolute latest log to determine current state
+        # This prevents "Sequence Errors" where the UI and Server disagree on the state machine
         last_log = await attendance_logs_collection.find_one(
-            {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start_utc}},
+            {"user_id": str(user["_id"])},
             sort=[("timestamp", -1)]
         )
 
@@ -1028,6 +1036,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         return {
             "status": "success",
             "type": attendance_type,
+            "current_status": attendance_type, # Provide immediate state for UI sync
             "message": f"Attendance {attendance_type.replace('-', ' ').title()} Successful. Verified via {check_in_method.value.replace('_', ' ').title()}.",
             "time": log["timestamp"].isoformat(),
             "is_late": is_late,
@@ -1265,12 +1274,23 @@ async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
     ).sort("timestamp", -1).limit(5)
     history = await history_cursor.to_list(length=5)
     
-    # Determine current_status from today's latest log (guarantees sync with validator)
+    # Determine current_status from the absolute latest log entry (Guarantees system-wide sync)
+    latest_log = await attendance_logs_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("timestamp", -1)]
+    )
+    
+    # Logic:
+    # 1. If no logs at all -> check-out (ready to check in)
+    # 2. If latest is check-in -> check-in (ready to check out)
+    # 3. If latest is check-out -> check-out (ready to check in)
+    current_status = latest_log.get("type", "check-out") if latest_log else "check-out"
+    
+    # Also find today's specific latest log for diagnostic display if needed
     latest_today = await attendance_logs_collection.find_one(
         {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start}},
         sort=[("timestamp", -1)]
     )
-    current_status = latest_today.get("type", "check-out") if latest_today else "check-out"
 
     for h in history:
         h["_id"] = str(h["_id"])
