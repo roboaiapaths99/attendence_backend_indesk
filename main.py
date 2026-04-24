@@ -1220,135 +1220,166 @@ async def get_employee_profile(current_user: dict = Depends(get_current_employee
 @app.get("/api/analytics/me")
 async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
     """Get summarized work hours and stats for the logged-in employee."""
-    user = await employees_collection.find_one({"email": current_user["email"]})
-    if not user:
-        raise HTTPException(status_code=404, detail="Employee not found")
+    user_email = current_user.get("email")
+    current_status = "check-out" # Default safety
+    
+    try:
+        user = await employees_collection.find_one({"email": user_email})
+        if not user:
+            return {"email": user_email, "current_status": "check-out", "today_hours": "00:00"}
 
-    # Localized today start
-    org_id = user.get("organization_id")
-    tz_offset = 330
-    if org_id:
-        org_settings = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
-        if org_settings:
-            tz_offset = org_settings.get("timezone_offset", 330)
+        user_id_str = str(user["_id"])
+        org_id = user.get("organization_id")
+        tz_offset = 330
+        if org_id:
+            org_settings = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+            if org_settings:
+                tz_offset = org_settings.get("timezone_offset", 330)
 
-    today_start = get_today_start(tz_offset)
-    week_start = today_start - timedelta(days=today_start.weekday())
-    month_start = today_start.replace(day=1)
+        today_start = get_today_start(tz_offset)
 
-    # Get all logs for the week for on-time counting
-    all_logs = await attendance_logs_collection.find({
-        "user_id": str(user["_id"]),
-        "timestamp": {"$gte": week_start}
-    }).sort("timestamp", 1).to_list(length=1000)
-
-    async def calculate_hours(logs_subset):
-        total_seconds = 0
-        current_check_in = None
-        for log in logs_subset:
-            ltype = log.get("type", "").lower()
-            if "in" in ltype:
-                current_check_in = log["timestamp"]
-            elif "out" in ltype and current_check_in:
-                duration = (log["timestamp"] - current_check_in).total_seconds()
-                total_seconds += max(0, duration)
-                current_check_in = None
-        if current_check_in:
-            # Ensure aware
-            cin_aware = current_check_in
-            if cin_aware.tzinfo is None:
-                cin_aware = cin_aware.replace(tzinfo=timezone.utc)
-            duration = (datetime.now(timezone.utc) - cin_aware).total_seconds()
-            total_seconds += max(0, duration)
-        return round(total_seconds / 3600.0, 1)
-
-    today_logs = [l for l in all_logs if l["timestamp"] >= today_start]
-    week_logs = all_logs
-    month_logs = await attendance_logs_collection.find({
-        "user_id": str(user["_id"]),
-        "timestamp": {"$gte": month_start}
-    }).to_list(length=2000)
-
-    today_hours = await calculate_hours(today_logs)
-    week_hours = await calculate_hours(week_logs)
-    month_hours = await calculate_hours(month_logs)
-
-    # Calculate on-time count
-    on_time_count = 0
-    for log in all_logs:
-        if "in" in log.get("type", "").lower():
-            # Standard logic from consolidated get_analytics
-            user_type = user.get("employee_type", "desk")
-            if user_type == "field" and org_id:
-                org_doc = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
-                start_time_str = org_doc.get("field_office_start_time", "10:00") if org_doc else "10:00"
-                threshold_mins = org_doc.get("field_late_threshold_mins", 30) if org_doc else 30
+        # 1. Determine Status FIRST (Highest Priority for UI Sync)
+        latest_log = await attendance_logs_collection.find_one(
+            {"user_id": user_id_str},
+            sort=[("timestamp", -1)]
+        )
+        
+        if latest_log:
+            log_type = latest_log.get("type", "check-out")
+            if log_type == "check-in":
+                l_ts = latest_log["timestamp"]
+                if l_ts.tzinfo is None: l_ts = l_ts.replace(tzinfo=timezone.utc)
+                if l_ts < today_start:
+                    current_status = "check-out" # Stale
+                else:
+                    current_status = "check-in"
             else:
+                current_status = "check-out"
+            org_settings = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+            if org_settings:
+                tz_offset = org_settings.get("timezone_offset", 330)
+
+        today_start = get_today_start(tz_offset)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        month_start = today_start.replace(day=1)
+
+        # Get logs for calculation
+        all_logs = await attendance_logs_collection.find({
+            "user_id": str(user["_id"]),
+            "timestamp": {"$gte": week_start}
+        }).sort("timestamp", 1).to_list(length=1000)
+
+        async def calculate_hours(logs_subset):
+            total_seconds = 0
+            current_check_in = None
+            for log in logs_subset:
+                l_ts = log["timestamp"]
+                if l_ts.tzinfo is None: l_ts = l_ts.replace(tzinfo=timezone.utc)
+                
+                ltype = log.get("type", "").lower()
+                if "in" in ltype:
+                    current_check_in = l_ts
+                elif "out" in ltype and current_check_in:
+                    duration = (l_ts - current_check_in).total_seconds()
+                    total_seconds += max(0, duration)
+                    current_check_in = None
+            
+            if current_check_in:
+                now_utc = datetime.now(timezone.utc)
+                duration = (now_utc - current_check_in).total_seconds()
+                total_seconds += max(0, duration)
+            return round(total_seconds / 3600.0, 1)
+
+        # Create aware logs for filtering
+        aware_logs = []
+        for l in all_logs:
+            l_ts = l["timestamp"]
+            if l_ts.tzinfo is None: l_ts = l_ts.replace(tzinfo=timezone.utc)
+            l["aware_ts"] = l_ts
+            aware_logs.append(l)
+
+        today_logs = [l for l in aware_logs if l["aware_ts"] >= today_start]
+        
+        today_hours = await calculate_hours(today_logs)
+        week_hours = await calculate_hours(aware_logs)
+        
+        # Month hours (Separate query for performance)
+        month_logs = await attendance_logs_collection.find({
+            "user_id": str(user["_id"]),
+            "timestamp": {"$gte": month_start}
+        }).to_list(length=2000)
+        month_hours = await calculate_hours(month_logs)
+
+        # On-time count
+        on_time_count = 0
+        for log in aware_logs:
+            if "in" in log.get("type", "").lower():
+                user_type = user.get("employee_type", "desk")
                 start_time_str = "10:00"
                 threshold_mins = 15
-            
-            try:
-                start_h, start_m = map(int, start_time_str.split(":"))
-                local_log_time = log["timestamp"] + timedelta(minutes=tz_offset)
-                limit_time = local_log_time.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
-                if local_log_time <= limit_time:
-                    on_time_count += 1
-            except: pass
+                if user_type == "field" and org_id:
+                    org_doc = await settings_collection.find_one({"organization_id": str(org_id) if ObjectId.is_valid(str(org_id)) else org_id})
+                    if org_doc:
+                        start_time_str = org_doc.get("field_office_start_time", "10:00")
+                        threshold_mins = org_doc.get("field_late_threshold_mins", 30)
+                
+                try:
+                    start_h, start_m = map(int, start_time_str.split(":"))
+                    local_log_time = log["aware_ts"] + timedelta(minutes=tz_offset)
+                    limit_time = local_log_time.replace(hour=start_h, minute=start_m, second=0, microsecond=0) + timedelta(minutes=threshold_mins)
+                    if local_log_time <= limit_time:
+                        on_time_count += 1
+                except: pass
 
-    # Get last 5 history items
-    history_cursor = attendance_logs_collection.find(
-        {"user_id": str(user["_id"])}
-    ).sort("timestamp", -1).limit(5)
-    history = await history_cursor.to_list(length=5)
-    
-    # Determine current_status from the absolute latest log entry (Guarantees system-wide sync)
-    latest_log = await attendance_logs_collection.find_one(
-        {"user_id": str(user["_id"])},
-        sort=[("timestamp", -1)]
-    )
-    
-    # Logic:
-    # 1. If no logs at all -> check-out (ready to check in)
-    # 2. If latest is check-in from TODAY -> check-in (ready to check out)
-    # 3. If latest is check-in from PREVIOUS day -> treat as check-out (stale session)
-    # 4. If latest is check-out -> check-out (ready to check in)
-    if latest_log:
-        log_type = latest_log.get("type", "check-out")
-        if log_type == "check-in":
-            # Check if it's a stale session from a previous day
-            log_ts = latest_log.get("timestamp")
-            if log_ts and log_ts.tzinfo is None:
-                log_ts = log_ts.replace(tzinfo=timezone.utc)
-            if log_ts and log_ts < today_start:
-                current_status = "check-out"  # Stale session — user can check in again
-            else:
-                current_status = "check-in"
-        else:
-            current_status = log_type
-    else:
+        # Latest history
+        history_cursor = attendance_logs_collection.find(
+            {"user_id": str(user["_id"])}
+        ).sort("timestamp", -1).limit(5)
+        history = await history_cursor.to_list(length=5)
+        for h in history:
+            h["_id"] = str(h["_id"])
+            if "timestamp" in h and isinstance(h["timestamp"], datetime):
+                h["timestamp"] = h["timestamp"].isoformat()
+
+        # Absolute Status Sync
+        latest_log = await attendance_logs_collection.find_one(
+            {"user_id": str(user["_id"])},
+            sort=[("timestamp", -1)]
+        )
+        
         current_status = "check-out"
-    
-    # Also find today's specific latest log for diagnostic display if needed
-    latest_today = await attendance_logs_collection.find_one(
-        {"user_id": str(user["_id"]), "timestamp": {"$gte": today_start}},
-        sort=[("timestamp", -1)]
-    )
-
-    for h in history:
-        h["_id"] = str(h["_id"])
-        h["timestamp"] = h["timestamp"].isoformat().replace("+00:00", "Z")
-
-    return {
-        "today_hours": today_hours,
-        "week_total": week_hours, # Match key name expected by frontend or previously
-        "this_week_hours": week_hours,
-        "this_month_hours": month_hours,
-        "avg_check_in": "09:15 AM",
-        "on_time_count": on_time_count,
-        "current_status": current_status,
-        "history": history,
-        "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", "")
-    }
+        if latest_log:
+            log_type = latest_log.get("type", "check-out")
+            if log_type == "check-in":
+                l_ts = latest_log["timestamp"]
+                if l_ts.tzinfo is None: l_ts = l_ts.replace(tzinfo=timezone.utc)
+                if l_ts < today_start:
+                    current_status = "check-out" # Stale
+                    logger.info(f"[Analytics] Stale session auto-closed for {user['email']}")
+                else:
+                    current_status = "check-in"
+            else:
+                current_status = log_type
+        
+        return {
+            "email": user["email"],
+            "today_hours": today_hours,
+            "week_total": week_hours,
+            "month_total": month_hours,
+            "on_time_count": on_time_count,
+            "current_status": current_status,
+            "history": history,
+            "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", "")
+        }
+    except Exception as e:
+        logger.error(f"Analytics Error: {str(e)}", exc_info=True)
+        return {
+            "today_hours": "00:00",
+            "week_total": "00:00",
+            "current_status": current_status,
+            "office_wifi_ssid": os.getenv("OFFICE_WIFI_SSID", ""),
+            "error": "Internal analytics error"
+        }
 
 
 @app.post("/api/employee/update-face")
