@@ -1,5 +1,6 @@
 import motor.motor_asyncio
 import os
+import certifi
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,7 +13,7 @@ client = motor.motor_asyncio.AsyncIOMotorClient(
     serverSelectionTimeoutMS=5000,   # fail fast if Atlas is unreachable
     connectTimeoutMS=5000,
     socketTimeoutMS=20000,
-    tlsAllowInvalidCertificates=True,
+    tlsCAFile=certifi.where(),
 )
 db = client[DATABASE_NAME]
 

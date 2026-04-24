@@ -784,12 +784,39 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         tz_offset = 330 # Default IST
         if org_settings:
             tz_offset = org_settings.get("timezone_offset", 330)
+        today_start_utc = get_today_start(tz_offset)
+        
         # Session Validation: Use absolute latest log to determine current state
-        # This prevents "Sequence Errors" where the UI and Server disagree on the state machine
         last_log = await attendance_logs_collection.find_one(
             {"user_id": str(user["_id"])},
             sort=[("timestamp", -1)]
         )
+
+        # AUTO-CLOSE STALE SESSIONS: If last log is a check-in from a PREVIOUS day,
+        # auto-insert a system check-out so the user isn't permanently stuck.
+        if last_log and last_log.get("type") == "check-in":
+            last_ts = last_log.get("timestamp")
+            if last_ts and last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            if last_ts and last_ts < today_start_utc:
+                # Stale session from a previous day — auto-close it
+                auto_checkout_time = last_ts.replace(hour=23, minute=59, second=59) if last_ts.hour < 23 else last_ts + timedelta(seconds=1)
+                auto_checkout_log = {
+                    "user_id": str(user["_id"]),
+                    "type": "check-out",
+                    "timestamp": auto_checkout_time,
+                    "lat": last_log.get("lat", 0),
+                    "long": last_log.get("long", 0),
+                    "location_name": "Auto-closed (missed checkout)",
+                    "wifi_bssid": "",
+                    "wifi_ssid": "",
+                    "method": "system_auto_close",
+                    "organization_id": str(org_id) if org_id else None,
+                }
+                await attendance_logs_collection.insert_one(auto_checkout_log)
+                logger.info(f"[AutoClose] Inserted system checkout for {user['email']} at {auto_checkout_time}")
+                # Re-fetch last_log after auto-close
+                last_log = auto_checkout_log
 
         # Session Validation: Simple State Machine
         if attendance_type == "check-in":
@@ -1282,9 +1309,24 @@ async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
     
     # Logic:
     # 1. If no logs at all -> check-out (ready to check in)
-    # 2. If latest is check-in -> check-in (ready to check out)
-    # 3. If latest is check-out -> check-out (ready to check in)
-    current_status = latest_log.get("type", "check-out") if latest_log else "check-out"
+    # 2. If latest is check-in from TODAY -> check-in (ready to check out)
+    # 3. If latest is check-in from PREVIOUS day -> treat as check-out (stale session)
+    # 4. If latest is check-out -> check-out (ready to check in)
+    if latest_log:
+        log_type = latest_log.get("type", "check-out")
+        if log_type == "check-in":
+            # Check if it's a stale session from a previous day
+            log_ts = latest_log.get("timestamp")
+            if log_ts and log_ts.tzinfo is None:
+                log_ts = log_ts.replace(tzinfo=timezone.utc)
+            if log_ts and log_ts < today_start:
+                current_status = "check-out"  # Stale session — user can check in again
+            else:
+                current_status = "check-in"
+        else:
+            current_status = log_type
+    else:
+        current_status = "check-out"
     
     # Also find today's specific latest log for diagnostic display if needed
     latest_today = await attendance_logs_collection.find_one(
