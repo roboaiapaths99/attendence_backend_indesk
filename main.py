@@ -785,8 +785,12 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
 
         if attendance_type == "check-in":
             if last_log and last_log.get("type") == "check-in":
-                # Only strictly block if they literally checked in recently, allowing overrides otherwise over a new day
-                hours_since = (datetime.now(timezone.utc) - last_log["timestamp"]).total_seconds() / 3600
+                # Ensure last_log["timestamp"] is aware before subtraction
+                last_log_ts = last_log["timestamp"]
+                if last_log_ts.tzinfo is None:
+                    last_log_ts = last_log_ts.replace(tzinfo=timezone.utc)
+                
+                hours_since = (datetime.now(timezone.utc) - last_log_ts).total_seconds() / 3600
                 if hours_since < 12:
                     raise HTTPException(status_code=400, detail="You are already checked in. Please check out first before checking in again.")
         elif attendance_type == "check-out":
@@ -1221,7 +1225,11 @@ async def get_my_analytics(current_user: dict = Depends(get_current_employee)):
                 total_seconds += max(0, duration)
                 current_check_in = None
         if current_check_in:
-            duration = (datetime.now(timezone.utc) - current_check_in).total_seconds()
+            # Ensure aware
+            cin_aware = current_check_in
+            if cin_aware.tzinfo is None:
+                cin_aware = cin_aware.replace(tzinfo=timezone.utc)
+            duration = (datetime.now(timezone.utc) - cin_aware).total_seconds()
             total_seconds += max(0, duration)
         return round(total_seconds / 3600.0, 1)
 
@@ -4698,11 +4706,18 @@ async def get_employee_monthly_summary(
 
                 if log["type"] == "check-in":
                     last_in_time = log["timestamp"]
+                    if last_in_time.tzinfo is None:
+                        last_in_time = last_in_time.replace(tzinfo=timezone.utc)
                 elif log["type"] == "check-out" and last_in_time:
-                    delta = log["timestamp"] - last_in_time
+                    # Ensure log timestamp is aware
+                    log_ts = log["timestamp"]
+                    if log_ts.tzinfo is None:
+                        log_ts = log_ts.replace(tzinfo=timezone.utc)
+                    
+                    delta = log_ts - last_in_time
                     day_duration_ms += delta.total_seconds() * 1000
                     last_in_time = None
-                    day_info["last_out"] = log["timestamp"].replace(tzinfo=timezone.utc).isoformat()
+                    day_info["last_out"] = log_ts.isoformat()
 
             day_info["duration_hours"] = round(day_duration_ms / (1000 * 3600), 2)
             total_working_ms += day_duration_ms
