@@ -52,7 +52,7 @@ from database import (
 )
 from models import (
     RegisterRequest, LoginRequest, VerifyPresenceRequest, Token, LoginResponse, EmployeeProfile, UpdateFaceRequest,
-    AdminLoginRequest, EmployeeUpdate, SystemSettings, Admin, Organization, OrganizationRegisterRequest, SubAdminCreate,
+    AdminLoginRequest, EmployeeUpdate, SystemSettings, Admin, AdminRole, Organization, OrganizationRegisterRequest, SubAdminCreate,
     EmployeeType, TerritoryType, AttendanceType, CheckInMethod, PlanStatus, VisitPlan, Visit, LocationPing, ExpenseClaim,
     LeaveType, LeaveStatus, DiscussionMessage, LeaveRequest, SyncBatchRequest, ChangePasswordRequest
 )
@@ -1907,12 +1907,17 @@ async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: 
     if not update_data:
         raise HTTPException(status_code=400, detail="No update data provided")
     
-    query = {"email": email}
-    if current_admin.organization_id:
+    # Normalize email
+    clean_email = email.strip().lower()
+    query = {"email": clean_email}
+    
+    # Restrict by organization unless superadmin
+    if current_admin.organization_id and current_admin.role != AdminRole.SUPERADMIN:
         query["organization_id"] = current_admin.organization_id
 
     result = await employees_collection.update_one(query, {"$set": update_data})
     if result.matched_count == 0:
+        logger.warning(f"Admin {current_admin.email} tried to update non-existent or unauthorized employee: {clean_email}")
         raise HTTPException(status_code=404, detail="Employee not found")
         
     return {"message": "Employee updated successfully"}
