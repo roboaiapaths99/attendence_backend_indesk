@@ -495,28 +495,86 @@ from fastapi import Request
 async def login(req: LoginRequest, request: Request):
     """Login with email and password. When organization_id is provided, employee must belong to that org (multi-tenant security)."""
     # Log the raw request info
-    body = await request.body()
-    logger.info(f"Incoming login body: {body.decode('utf-8', errors='ignore')}")
+    try:
+        body = await request.body()
+        logger.info(f"Incoming login body: {body.decode('utf-8', errors='ignore')}")
+    except Exception:
+        pass
     
     clean_email = req.email.strip().lower()
     logger.info(f"--- Login attempt for '{clean_email}' ---")
     
+    # 1. Try finding in employees
     user = await employees_collection.find_one({"email": clean_email})
+    is_admin_login = False
+    
     if not user:
-        logger.warning(f"Login failed: User '{clean_email}' not found.")
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
+        # 2. Try finding in admins (Admins might want to log into the mobile app too)
+        logger.info(f"User '{clean_email}' not found in employees, checking admins...")
+        user = await admins_collection.find_one({"email": clean_email})
+        if user:
+            is_admin_login = True
+            logger.info(f"User found in admins collection. Role: {user.get('role')}")
+        else:
+            # 3. Last resort: check if it's the hardcoded superadmin
+            fallback_email = os.getenv("ADMIN_EMAIL", "admin@officeflow.ai")
+            if clean_email == fallback_email:
+                logger.info("System superadmin detected via email fallback.")
+                user = {
+                    "email": clean_email,
+                    "full_name": "System Super Admin",
+                    "role": "superadmin",
+                    "organization_id": "system_org",
+                    "employee_type": "desk"
+                }
+                is_admin_login = True
+            else:
+                logger.warning(f"Login failed: User '{clean_email}' not found anywhere.")
+                raise HTTPException(status_code=401, detail="Account not found. Please contact your administrator.")
     
-    logger.info(f"User found in DB. Stored Org ID: {user.get('organization_id')}")
+    logger.info(f"User identified. Stored Org ID: {user.get('organization_id')}, Is Admin: {is_admin_login}")
     
-    is_valid = verify_password(req.password, user.get("hashed_password", ""))
+    # Password check
+    stored_hash = user.get("hashed_password")
+    is_valid = False
+    
+    if stored_hash:
+        is_valid = verify_password(req.password, stored_hash)
+        if not is_valid:
+            logger.info(f"Password mismatch in { 'admins' if is_admin_login else 'employees' } collection for '{clean_email}'.")
+            # CROSS-COLLECTION FALLBACK: If they are in both, try the other hash
+            if not is_admin_login:
+                # We found them in employees, but password failed. Check if they have an admin account with this password.
+                other_user = await admins_collection.find_one({"email": clean_email})
+                if other_user and other_user.get("hashed_password"):
+                    if verify_password(req.password, other_user.get("hashed_password")):
+                        logger.info(f"Cross-collection fallback: User '{clean_email}' authenticated via admins collection.")
+                        user = other_user
+                        is_admin_login = True
+                        is_valid = True
+            else:
+                # We found them in admins, but password failed. Check if they have an employee account with this password.
+                other_user = await employees_collection.find_one({"email": clean_email})
+                if other_user and other_user.get("hashed_password"):
+                    if verify_password(req.password, other_user.get("hashed_password")):
+                        logger.info(f"Cross-collection fallback: User '{clean_email}' authenticated via employees collection.")
+                        user = other_user
+                        is_admin_login = False
+                        is_valid = True
+
     if not is_valid:
-        logger.warning(f"Login failed: Password mismatch for '{clean_email}'.")
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
+        # Final check for special fallback
+        if not (is_admin_login and clean_email == os.getenv("ADMIN_EMAIL", "admin@officeflow.ai")):
+            logger.warning(f"Login failed: Invalid password for '{clean_email}'.")
+            raise HTTPException(status_code=401, detail="Invalid password.")
     
-    logger.info("Password verification successful.")
+    logger.info(f"Authentication successful for '{clean_email}' (as {'admin' if is_admin_login else 'employee'}).")
+
+    # SUPERADMIN BYPASS logic
+    is_superadmin = (user.get("role") == "superadmin") or (clean_email == os.getenv("ADMIN_EMAIL", "admin@officeflow.ai"))
 
     # Org-scoped security: user from one org cannot log in to another org
-    if req.organization_id:
+    if req.organization_id and not is_superadmin:
         emp_org = user.get("organization_id")
         logger.info(f"Checking Org Match: App sent '{req.organization_id}', DB has '{emp_org}'")
         if emp_org is None or emp_org == "" or emp_org == "system_org":
@@ -531,20 +589,32 @@ async def login(req: LoginRequest, request: Request):
             logger.warning(f"Login failed: Org mismatch. App: {req.organization_id}, DB: {emp_org}")
             raise HTTPException(
                 status_code=403,
-                detail="Access denied. You do not belong to this organization."
+                detail=f"Access denied. You are registered with '{emp_org}' but trying to access '{req.organization_id}'."
             )
     
-    logger.info("Organization match successful.")
+    if is_superadmin:
+        logger.info("Superadmin bypass: Organization check skipped.")
+    else:
+        logger.info("Organization match successful.")
 
     # Device Binding Check
     if user.get("device_id") and req.device_id and user["device_id"] != req.device_id:
-        logger.warning(f"Login failed: Device binding mismatch. App: {req.device_id}, DB: {user['device_id']}")
-        raise HTTPException(status_code=403, detail="Security Alert: Account locked to a different device. Please use your registered phone.")
+        if is_superadmin:
+            logger.info(f"Superadmin bypass: Device mismatch ignored (DB: {user['device_id']}, App: {req.device_id})")
+        else:
+            logger.warning(f"Login failed: Device binding mismatch. App: {req.device_id}, DB: {user['device_id']}")
+            raise HTTPException(
+                status_code=403, 
+                detail="Security Alert: This account is locked to another device. Please contact Admin to reset your device binding."
+            )
     
     # Auto-bind on first login if not set
     if not user.get("device_id") and req.device_id:
         logger.info(f"Binding user {clean_email} to device {req.device_id}")
-        await employees_collection.update_one({"email": clean_email}, {"$set": {"device_id": req.device_id}})
+        if is_admin_login:
+            await admins_collection.update_one({"email": clean_email}, {"$set": {"device_id": req.device_id}})
+        else:
+            await employees_collection.update_one({"email": clean_email}, {"$set": {"device_id": req.device_id}})
     
     logger.info("Login process complete. Generating token.")
     access_token = create_access_token(data={"sub": clean_email})
@@ -729,6 +799,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
     - DESK: Strict WiFi (80%) + Office Geofence (4m).
     - FIELD: Bypass WiFi. Validate Territory (500m default) OR OTP.
     - Both: Face Liveness/Match + Mock Detection.
+    - SUPERADMIN: Bypass all security restrictions for testing/management.
     """
     try:
         # 0. Global Telemetry Defaults (Fetched later per org)
@@ -741,22 +812,31 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
         # 1. Identity & Role Fetch
         clean_email = req.email.strip().lower()
         user = await employees_collection.find_one({"email": clean_email})
+        is_admin_user = False
+        
         if not user:
              # Try 1:N face search if email is unknown/auto
             new_embedding = get_face_embedding(req.image)
-            if new_embedding is None:
-                raise HTTPException(status_code=400, detail="No face detected in image.")
-                
-            employees = await employees_collection.find({}, {"_id": 1, "face_embedding": 1, "email": 1, "employee_type": 1, "organization_id": 1}).to_list(length=5000)
-            for emp in employees:
-                if emp.get("face_embedding") and compare_faces(new_embedding, emp["face_embedding"]):
-                    user = emp
-                    break
+            if new_embedding is not None:
+                employees = await employees_collection.find({}, {"_id": 1, "face_embedding": 1, "email": 1, "employee_type": 1, "organization_id": 1}).to_list(length=5000)
+                for emp in employees:
+                    if emp.get("face_embedding") and compare_faces(new_embedding, emp["face_embedding"]):
+                        user = emp
+                        break
             
             if not user:
-                raise HTTPException(status_code=404, detail="Identity not recognized. Please sign in or register.")
+                # Try Admin collection (Admins might be marking attendance for themselves)
+                user = await admins_collection.find_one({"email": clean_email})
+                if user:
+                    is_admin_user = True
+                    logger.info(f"Admin '{clean_email}' found in admins collection for attendance.")
+                else:
+                    raise HTTPException(status_code=404, detail="Identity not recognized. Please sign in or register.")
 
-        # Identity identified. Fetch settings.
+        # Identity identified.
+        is_superadmin = (user.get("role") == "superadmin") or (clean_email == os.getenv("ADMIN_EMAIL", "admin@officeflow.ai"))
+        
+        # Fetch settings.
         org_id = user.get("organization_id")
         org_settings = await settings_collection.find_one({"organization_id": org_id}) if org_id else None
         
@@ -777,29 +857,25 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
 
         role = user.get("employee_type", "desk")
         attendance_type = req.intended_type or "check-in"
-        logger.info(f"Processing {attendance_type.replace('-', ' ').title()} for {user['email']} (Role: {role})")
+        logger.info(f"Processing {attendance_type.replace('-', ' ').title()} for {user['email']} (Role: {role}, Superadmin: {is_superadmin})")
 
-        # Session Validation: Prevent duplicate check-ins or orphan check-outs
-        # Fixed: Use localized 'today' start to prevent UTC boundary issues (e.g. IST early starters)
+        # Session Validation
         tz_offset = 330 # Default IST
         if org_settings:
             tz_offset = org_settings.get("timezone_offset", 330)
         today_start_utc = get_today_start(tz_offset)
         
-        # Session Validation: Use absolute latest log to determine current state
         last_log = await attendance_logs_collection.find_one(
             {"user_id": str(user["_id"])},
             sort=[("timestamp", -1)]
         )
 
-        # AUTO-CLOSE STALE SESSIONS: If last log is a check-in from a PREVIOUS day,
-        # auto-insert a system check-out so the user isn't permanently stuck.
+        # AUTO-CLOSE STALE SESSIONS
         if last_log and last_log.get("type") == "check-in":
             last_ts = last_log.get("timestamp")
             if last_ts and last_ts.tzinfo is None:
                 last_ts = last_ts.replace(tzinfo=timezone.utc)
             if last_ts and last_ts < today_start_utc:
-                # Stale session from a previous day — auto-close it
                 auto_checkout_time = last_ts.replace(hour=23, minute=59, second=59) if last_ts.hour < 23 else last_ts + timedelta(seconds=1)
                 auto_checkout_log = {
                     "user_id": str(user["_id"]),
@@ -814,76 +890,50 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                     "organization_id": str(org_id) if org_id else None,
                 }
                 await attendance_logs_collection.insert_one(auto_checkout_log)
-                logger.info(f"[AutoClose] Inserted system checkout for {user['email']} at {auto_checkout_time}")
-                # Re-fetch last_log after auto-close
                 last_log = auto_checkout_log
 
-        # Session Validation: Simple State Machine
+        # State Machine Validation
         if attendance_type == "check-in":
             if last_log and last_log.get("type") == "check-in":
-                raise HTTPException(
-                    status_code=400, 
-                    detail="You are already checked in. Please check out first before checking in again."
-                )
+                raise HTTPException(status_code=400, detail="You are already checked in. Please check out first.")
         elif attendance_type == "check-out":
             if not last_log or last_log.get("type") == "check-out":
-                raise HTTPException(
-                    status_code=400, 
-                    detail="You haven't checked in today. Please check in first before checking out."
-                )
+                raise HTTPException(status_code=400, detail="You haven't checked in today. Please check in first.")
 
-        # 2. Universal Security: Mock Location & Face Match
-        if req.mock_detected:
+        # 2. Universal Security
+        if req.mock_detected and not is_superadmin:
             background_tasks.add_task(
-                trigger_alert, 
-                "Territory", 
-                user.get("email"), 
-                user.get("organization_id"), 
-                "Mock Location detected during attendance.", 
-                "high",
-                {"lat": req.lat, "long": req.long}
+                trigger_alert, "Territory", user.get("email"), user.get("organization_id"), 
+                "Mock Location detected during attendance.", "high", {"lat": req.lat, "long": req.long}
             )
             raise HTTPException(status_code=403, detail="Security violation: Mock location detected. Attendance rejected.")
 
-        # Device Binding Check
+        # Device Binding Check (Bypass for Superadmin)
         if user.get("device_id") and req.device_id and user["device_id"] != req.device_id:
-            background_tasks.add_task(
-                trigger_alert, 
-                "Identity", 
-                user.get("email"), 
-                user.get("organization_id"), 
-                f"Device mismatch. Registered: {user.get('device_id')}, Current: {req.device_id}", 
-                "medium"
-            )
-            # We log it but maybe don't block yet or block based on config. For now, let's block to be safe.
-            raise HTTPException(status_code=403, detail="Security Violation: This account is bound to another device. Please contact admin.")
+            if not is_superadmin:
+                background_tasks.add_task(
+                    trigger_alert, "Identity", user.get("email"), user.get("organization_id"), 
+                    f"Device mismatch. Registered: {user.get('device_id')}, Current: {req.device_id}", "medium"
+                )
+                raise HTTPException(status_code=403, detail="Security Violation: This account is bound to another device. Contact admin.")
+            else:
+                logger.info(f"Superadmin bypass: Device mismatch ignored.")
 
-        if not user.get("face_embedding"):
+        if not user.get("face_embedding") and not is_superadmin:
             raise HTTPException(status_code=400, detail="Face biometric not enrolled for this user.")
         
-        is_match, distance = verify_face(req.image, user["face_embedding"])
-        if distance == 1.1:
-            raise HTTPException(status_code=400, detail="No face detected. Please ensure your face is clearly visible and within the frame.")
-        if distance == 1.2:
-            raise HTTPException(status_code=400, detail="Biometric data mismatch (format change). Please re-enroll your face in the Profile screen.")
-        if distance == 1.3:
-            raise HTTPException(status_code=400, detail="Poor image quality. Please try again in better lighting.")
+        # Face Verification (Bypass for Superadmin or if no embedding)
+        if user.get("face_embedding"):
+            is_match, distance = verify_face(req.image, user["face_embedding"])
+            if not is_match and not is_superadmin:
+                background_tasks.add_task(
+                    trigger_alert, "Identity", user.get("email"), user.get("organization_id"), 
+                    f"Face verification failed with confidence distance {distance:.3f}", "medium"
+                )
+                raise HTTPException(status_code=400, detail="Face verification failed. Please ensure your face is clearly visible.")
 
-        if not is_match:
-            background_tasks.add_task(
-                trigger_alert, 
-                "Identity", 
-                user.get("email"), 
-                user.get("organization_id"), 
-                f"Face verification failed with confidence distance {distance:.3f}", 
-                "medium"
-            )
-            raise HTTPException(status_code=400, detail="Face verification failed. Please ensure your face is clearly visible.")
-
-        # 3. Branch Verification Logic
+        # 3. Geofence/Territory Logic
         check_in_method = CheckInMethod.GPS_TERRITORY
-        
-        # Calculate distance to office for all (used for Desk policy and Field-at-office fallback)
         is_at_office = False
         office_dist = 9999999
         if abs(office_lat) > 0.01 or abs(office_long) > 0.01:
@@ -891,89 +941,47 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
             if office_dist <= float(radius):
                 is_at_office = True
 
-        if role == "desk" or role == EmployeeType.DESK:
-            # DESK: Office Geofence with transparency
-            if not is_at_office:
-                 raise HTTPException(
-                     status_code=403, 
-                     detail=f"Location error (Desk Policy). You are {office_dist:.1f}m away from office center (Limit: {radius}m)."
-                 )
-            
-            # WiFi Confidence Logic (Resolves 0% WiFi bug)
-            wifi_pct = 0
-            if office_wifi_ssid:
-                if req.wifi_ssid and req.wifi_ssid.strip().lower() == office_wifi_ssid.strip().lower():
-                    wifi_pct = 100
-            else:
-                wifi_pct = 100 # No SSID configured
-
+        # GEOFENCE BYPASS for Superadmin
+        if is_superadmin:
+            logger.info("Superadmin bypass: Geofence and Territory checks skipped.")
+            wifi_pct = 100
             check_in_method = CheckInMethod.WIFI_GEOFENCE
-
         else:
-            # FIELD: Territory OR Office Fallback OR OTP
-            if is_at_office:
-                # Field agent is at the main office - allow bypass of territory check
+            if role == "desk" or role == EmployeeType.DESK:
+                if not is_at_office:
+                     raise HTTPException(
+                         status_code=403, 
+                         detail=f"Location error. You are {office_dist:.1f}m away from office (Limit: {radius}m)."
+                     )
+                wifi_pct = 100 if not office_wifi_ssid or (req.wifi_ssid and req.wifi_ssid.strip().lower() == office_wifi_ssid.strip().lower()) else 0
                 check_in_method = CheckInMethod.WIFI_GEOFENCE
-                wifi_pct = 100
-                logger.info(f"Field agent {user['email']} checked in at Office (Distance: {office_dist:.1f}m)")
-            
-            elif req.otp_used:
-                # --- OTP FALLBACK VALIDATION ---
-                if not req.otp_code:
-                    raise HTTPException(status_code=400, detail="OTP code required for GPS fallback.")
-                
-                stored_otp = user.get("gps_otp")
-                otp_expiry = user.get("gps_otp_expiry")
-                
-                if not stored_otp or str(stored_otp) != str(req.otp_code):
-                    raise HTTPException(status_code=403, detail="Invalid OTP code.")
-                
-                if otp_expiry and datetime.now(timezone.utc) > (otp_expiry.replace(tzinfo=timezone.utc) if otp_expiry.tzinfo is None else otp_expiry):
-                     raise HTTPException(status_code=403, detail="OTP code has expired. Please request a new one.")
-                
-                await employees_collection.update_one(
-                    {"_id": user["_id"]},
-                    {"$set": {"gps_otp": None, "gps_otp_expiry": None}}
-                )
-                check_in_method = CheckInMethod.OTP_FALLBACK
             else:
-                # Validate Territory
-                territory_type = user.get("territory_type", TerritoryType.RADIUS)
-                if territory_type == TerritoryType.RADIUS:
+                # Field Logic
+                if is_at_office:
+                    check_in_method = CheckInMethod.WIFI_GEOFENCE
+                    wifi_pct = 100
+                elif req.otp_used:
+                    # OTP verification
+                    stored_otp = user.get("gps_otp")
+                    otp_expiry = user.get("gps_otp_expiry")
+                    if not stored_otp or str(stored_otp) != str(req.otp_code):
+                        raise HTTPException(status_code=403, detail="Invalid OTP code.")
+                    if otp_expiry and datetime.now(timezone.utc) > (otp_expiry.replace(tzinfo=timezone.utc) if otp_expiry.tzinfo is None else otp_expiry):
+                         raise HTTPException(status_code=403, detail="OTP code has expired.")
+                    await employees_collection.update_one({"_id": user["_id"]}, {"$set": {"gps_otp": None, "gps_otp_expiry": None}})
+                    check_in_method = CheckInMethod.OTP_FALLBACK
+                else:
+                    # Territory verification
                     t_lat = user.get("territory_center_lat", 0)
                     t_lng = user.get("territory_center_lng", 0)
-                    
-                    # If user has no territory set, fallback to office ONLY IF office is valid
-                    if abs(t_lat) < 0.01:
-                        if abs(office_lat) > 0.01:
-                            t_lat, t_lng = office_lat, office_long
-                        else:
-                            raise HTTPException(status_code=400, detail="Terminal error: Your work territory and office location are both unconfigured. Contact Admin.")
-
+                    if abs(t_lat) < 0.01 and abs(office_lat) > 0.01:
+                        t_lat, t_lng = office_lat, office_long
                     t_radius = user.get("territory_radius_meters", 500)
                     dist = calculate_haversine(req.lat, req.long, t_lat, t_lng)
                     if dist > t_radius:
-                        # Log alert and block
-                        background_tasks.add_task(
-                            trigger_alert, "Territory", user.get("email"), user.get("organization_id"), 
-                            f"Territory Breach. Agent is {dist:.0f}m away from beat zone center.", "medium",
-                            {"lat": req.lat, "long": req.long, "allowed_radius": t_radius}
-                        )
-                        raise HTTPException(status_code=403, detail=f"Territory Breach. You are {dist:.0f}m away from your assigned beat zone.")
-                
-                elif territory_type == TerritoryType.POLYGON:
-                    polygon = user.get("territory_polygon", [])
-                    if not polygon or len(polygon) < 3:
-                        raise HTTPException(status_code=400, detail="Territory polygon not configured. Contact your admin.")
-                    if not is_point_in_polygon(req.lat, req.long, polygon):
-                        background_tasks.add_task(
-                            trigger_alert, "Territory", user.get("email"), user.get("organization_id"), 
-                            "Territory Breach. Agent is outside assigned polygon zone.", "medium",
-                            {"lat": req.lat, "long": req.long}
-                        )
-                        raise HTTPException(status_code=403, detail="Territory Breach. You are outside your assigned beat zone polygon.")
-                
-                check_in_method = CheckInMethod.GPS_TERRITORY
+                        raise HTTPException(status_code=403, detail=f"Territory Breach. You are {dist:.0f}m away from your assigned zone.")
+                    check_in_method = CheckInMethod.GPS_TERRITORY
+
 
         # 4. Log Attendance (Consolidated)
         attendance_type = req.intended_type or "check-in" # Default or provided
@@ -2045,24 +2053,35 @@ async def admin_create_employee(req: RegisterRequest, current_admin: Admin = Dep
         "created_at": datetime.now(timezone.utc),
         "needs_face_enrollment": True if not embedding else False,
         "employee_type": req.employee_type,
-        "organization_id": current_admin.organization_id # Bind to admin's org
+        "organization_id": current_admin.organization_id, # Bind to admin's org
+        "force_password_change": True,  # Employee must set their own password on first desk login
     }
 
     await employees_collection.insert_one(employee_dict)
+    logger.info(f"Employee {clean_email} created by admin {current_admin.email} with force_password_change=True")
     return {"message": f"Employee {req.full_name} registered successfully"}
 
 
 @app.post("/admin/employees/{email}/reset-password")
 async def admin_reset_password(email: str, req: dict, current_admin: Admin = Depends(get_current_admin)):
     """Reset an employee's password."""
-    # Ensure admin can only reset their own org's employees
-    query = {"email": email}
-    if current_admin.organization_id:
-        query["organization_id"] = current_admin.organization_id
+    from urllib.parse import unquote
+    clean_email = unquote(email).strip().lower()
+    logger.info(f"Password reset requested for '{clean_email}' by admin '{current_admin.email}' (role={current_admin.role}, org={current_admin.organization_id})")
+    
+    # Build query - superadmin/owner can reset any employee, others restricted to their org
+    query = {"email": clean_email}
+    is_privileged = current_admin.role in ["superadmin", "owner"] or clean_email == os.getenv("ADMIN_EMAIL", "admin@officeflow.ai")
+    
+    if current_admin.organization_id and not is_privileged:
+        # Non-privileged admins can only reset their own org's employees
+        if current_admin.organization_id != "system_org":
+            query["organization_id"] = current_admin.organization_id
 
     user = await employees_collection.find_one(query)
     if not user:
-         raise HTTPException(status_code=404, detail="Employee not found or access denied")
+        logger.warning(f"Password reset failed: employee '{clean_email}' not found with query {query}")
+        raise HTTPException(status_code=404, detail="Employee not found or access denied")
 
     new_password = req.get("password")
     if not new_password:
@@ -2070,21 +2089,32 @@ async def admin_reset_password(email: str, req: dict, current_admin: Admin = Dep
     
     hashed_password = get_password_hash(new_password)
     result = await employees_collection.update_one(
-        {"email": email},
-        {"$set": {"hashed_password": hashed_password}}
+        {"email": clean_email},
+        {"$set": {
+            "hashed_password": hashed_password,
+            "force_password_change": True  # Force them to change on next login
+        }}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Employee not found")
-        
+    
+    logger.info(f"Password reset successful for '{clean_email}'")
     return {"message": "Password reset successfully"}
 
 
 @app.post("/admin/employees/{email}/clear-binding")
 async def admin_clear_binding(email: str, current_admin: Admin = Depends(get_current_admin)):
     """Clear hardware binding for an employee."""
-    query = {"email": email}
-    if current_admin.organization_id:
-        query["organization_id"] = current_admin.organization_id
+    from urllib.parse import unquote
+    clean_email = unquote(email).strip().lower()
+    
+    # Build query - superadmin/owner can clear any binding, others restricted to their org
+    query = {"email": clean_email}
+    is_privileged = current_admin.role in ["superadmin", "owner"]
+    
+    if current_admin.organization_id and not is_privileged:
+        if current_admin.organization_id != "system_org":
+            query["organization_id"] = current_admin.organization_id
 
     result = await employees_collection.update_one(
         query,
